@@ -1,0 +1,1058 @@
+---
+title: "AlfalfaHelferNonLinearReport"
+output: html_document
+date: "2023-01-16"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE}
+library(data.table);
+library(drc);
+library(tidyr);
+library(sommer);
+library(nlme);
+library(ggplot2);
+```
+
+# Looking at Weather of Each of 6 Cuttings:
+
+```{r}
+mat_dap_gdd <- data.frame(fread('2019_Helfer_Alfalfa_DAP_GDD.csv', header=TRUE, sep=','))
+mat_dap_gdd$DAP <- as.numeric(mat_dap_gdd$DAP)
+mat_dap_gdd$Cutting <- factor(mat_dap_gdd$cut, levels=c("Spring 2020","Spring 2021","Summer 2020","Summer 2021","Fall 2020","Fall 2021"))
+```
+
+### Growing Degree Days (GDD) of each cutting, shows that Spring (Cutting 1 and 4) are different than Other Cuttings (Cuttings 2, 3, 5, 6)
+
+```{r, echo=FALSE}
+gdd_p1 <- ggplot(data=mat_dap_gdd, aes(x=DAP, y=GDD, color=Cutting)) +
+  geom_line() + geom_point(aes(shape=Cutting), size = 4) +
+  scale_color_brewer(palette="Paired")+
+  theme_minimal()
+gdd_p1 <- gdd_p1 + labs(y= "GDD (F)", x = "Growth Days")
+gdd_p1 <- gdd_p1 + ggtitle("Growth Days Within Cuttings vs Growing Degree Days (GDD)")
+gdd_p1
+```
+
+### Cumulative Precipitation (CP) of each cutting
+
+```{r, echo=FALSE}
+cp_p1 <- ggplot(data=mat_dap_gdd, aes(x=DAP, y=CP, color=Cutting)) +
+  geom_line() + geom_point(aes(shape=Cutting), size = 4) +
+  scale_color_brewer(palette="Paired")+
+  theme_minimal()
+cp_p1 <- cp_p1 + labs(y= "CP (1e-4 m)", x = "Growth Days")
+cp_p1 <- cp_p1 + ggtitle("Growth Days Within Cuttings vs Cumulative Precipitation (CP)")
+cp_p1
+```
+
+# The Dose Response Model (DRM)
+
+### The drc package has a drm function that can model many functions including 4-parameter logistic regression using L.4
+
+* https://www.statforbiology.com/nonlinearregression/usefulequations#log-logistic_curve
+
+# Read in Helfer field design, harvest data, and NDVI HTP
+
+```{r}
+mat <- data.frame(fread('2019_Helfer_alfalfa_Pix4d_Phenos.csv', header=TRUE, sep=','))
+mat$rowNumber <- as.numeric(mat$rowNumber)
+mat$colNumber <- as.numeric(mat$colNumber)
+```
+
+#### NDVI with good heritability occurred on the following DAP:
+
+```{r}
+ndvi_h2_filtered_dap <- c(
+  321, 325, 328, 336, 343, 350, 373, 376, 383, 389, 403, 431, 435, 438, 446, 450, 452, 454, 461, 468, 471,
+  671, 677, 681, 705, 708, 715, 723, 740, 743, 749, 756, 762, 764, 768, 772, 786, 790, 800, 804, 807
+);
+```
+
+#### Splitting the 6 alfalfa cutting/regrowth periods into own dataframes:
+
+```{r, echo=FALSE}
+mat_ndvi_cut1 <- data.frame(id=mat$germplasmName, plot_id=mat$observationUnitName, replicate=mat$replicate, rowNumber=mat$rowNumber, colNumber=mat$colNumber, cut=rep(1,nrow(mat)), NDVI_321=mat$NDVI_321, NDVI_325=mat$NDVI_325, NDVI_336=mat$NDVI_336, NDVI_343=mat$NDVI_343, NDVI_350=mat$NDVI_350)
+
+mat_ndvi_cut2 <- data.frame(id=mat$germplasmName, plot_id=mat$observationUnitName, replicate=mat$replicate, rowNumber=mat$rowNumber, colNumber=mat$colNumber, cut=rep(2,nrow(mat)), NDVI_373=mat$NDVI_373, NDVI_376=mat$NDVI_376, NDVI_383=mat$NDVI_383, NDVI_389=mat$NDVI_389)
+
+mat_ndvi_cut3 <- data.frame(id=mat$germplasmName, plot_id=mat$observationUnitName, replicate=mat$replicate, rowNumber=mat$rowNumber, colNumber=mat$colNumber, cut=rep(3,nrow(mat)), NDVI_403=mat$NDVI_403, NDVI_431=mat$NDVI_431, NDVI_435=mat$NDVI_435, NDVI_438=mat$NDVI_438)
+
+mat_ndvi_cut4 <- data.frame(id=mat$germplasmName, plot_id=mat$observationUnitName, replicate=mat$replicate, rowNumber=mat$rowNumber, colNumber=mat$colNumber, cut=rep(4,nrow(mat)), NDVI_671=mat$NDVI_671, NDVI_677=mat$NDVI_677, NDVI_681=mat$NDVI_681, NDVI_705=mat$NDVI_705, NDVI_708=mat$NDVI_708, NDVI_715=mat$NDVI_715, NDVI_723=mat$NDVI_723)
+
+mat_ndvi_cut5 <- data.frame(id=mat$germplasmName, plot_id=mat$observationUnitName, replicate=mat$replicate, rowNumber=mat$rowNumber, colNumber=mat$colNumber, cut=rep(5,nrow(mat)), NDVI_740=mat$NDVI_740, NDVI_743=mat$NDVI_743, NDVI_749=mat$NDVI_749, NDVI_756=mat$NDVI_756, NDVI_762=mat$NDVI_762, NDVI_768=mat$NDVI_768, NDVI_772=mat$NDVI_772)
+
+mat_ndvi_cut6 <- data.frame(id=mat$germplasmName, plot_id=mat$observationUnitName, replicate=mat$replicate, rowNumber=mat$rowNumber, colNumber=mat$colNumber, cut=rep(6,nrow(mat)), NDVI_786=mat$NDVI_786, NDVI_790=mat$NDVI_790, NDVI_800=mat$NDVI_800, NDVI_804=mat$NDVI_804, NDVI_807=mat$NDVI_807)
+```
+
+#### Reformatting the 6 alfalfa cutting/regrowth periods into long dataframes:
+
+```{r, echo=FALSE}
+mat_ndvi_cut1_long <- gather(mat_ndvi_cut1, time, value, NDVI_321:NDVI_350);
+mat_ndvi_cut1_long$time <- gsub("NDVI_","",as.character(mat_ndvi_cut1_long$time));
+mat_ndvi_cut1_long$time <- as.numeric(mat_ndvi_cut1_long$time);
+mat_ndvi_cut1_long$time_zeroed <- mat_ndvi_cut1_long$time - min(mat_ndvi_cut1_long$time);
+mat_ndvi_cut1_long$rep_time <- as.factor(paste(mat_ndvi_cut1_long$replicate, mat_ndvi_cut1_long$time));
+mat_ndvi_cut1_long$id <- as.factor(mat_ndvi_cut1_long$id);
+mat_ndvi_cut1_long$plot_id <- as.factor(mat_ndvi_cut1_long$plot_id);
+
+mat_ndvi_cut2_long <- gather(mat_ndvi_cut2, time, value, NDVI_373:NDVI_389);
+mat_ndvi_cut2_long$time <- gsub("NDVI_","",as.character(mat_ndvi_cut2_long$time));
+mat_ndvi_cut2_long$time <- as.numeric(mat_ndvi_cut2_long$time);
+mat_ndvi_cut2_long$time_zeroed <- mat_ndvi_cut2_long$time - min(mat_ndvi_cut2_long$time);
+mat_ndvi_cut2_long$rep_time <- as.factor(paste(mat_ndvi_cut2_long$replicate, mat_ndvi_cut2_long$time));
+mat_ndvi_cut2_long$id <- as.factor(mat_ndvi_cut2_long$id);
+mat_ndvi_cut2_long$plot_id <- as.factor(mat_ndvi_cut2_long$plot_id);
+
+mat_ndvi_cut3_long <- gather(mat_ndvi_cut3, time, value, NDVI_403:NDVI_438);
+mat_ndvi_cut3_long$time <- gsub("NDVI_","",as.character(mat_ndvi_cut3_long$time));
+mat_ndvi_cut3_long$time <- as.numeric(mat_ndvi_cut3_long$time);
+mat_ndvi_cut3_long$time_zeroed <- mat_ndvi_cut3_long$time - min(mat_ndvi_cut3_long$time);
+mat_ndvi_cut3_long$rep_time <- as.factor(paste(mat_ndvi_cut3_long$replicate, mat_ndvi_cut3_long$time));
+mat_ndvi_cut3_long$id <- as.factor(mat_ndvi_cut3_long$id);
+
+mat_ndvi_cut4_long <- gather(mat_ndvi_cut4, time, value, NDVI_671:NDVI_723);
+mat_ndvi_cut4_long$time <- gsub("NDVI_","",as.character(mat_ndvi_cut4_long$time));
+mat_ndvi_cut4_long$time <- as.numeric(mat_ndvi_cut4_long$time);
+mat_ndvi_cut4_long$time_zeroed <- mat_ndvi_cut4_long$time - min(mat_ndvi_cut4_long$time);
+mat_ndvi_cut4_long$rep_time <- as.factor(paste(mat_ndvi_cut4_long$replicate, mat_ndvi_cut4_long$time));
+mat_ndvi_cut4_long$id <- as.factor(mat_ndvi_cut4_long$id);
+
+mat_ndvi_cut5_long <- gather(mat_ndvi_cut5, time, value, NDVI_740:NDVI_772);
+mat_ndvi_cut5_long$time <- gsub("NDVI_","",as.character(mat_ndvi_cut5_long$time));
+mat_ndvi_cut5_long$time <- as.numeric(mat_ndvi_cut5_long$time);
+mat_ndvi_cut5_long$time_zeroed <- mat_ndvi_cut5_long$time - min(mat_ndvi_cut5_long$time);
+mat_ndvi_cut5_long$rep_time <- as.factor(paste(mat_ndvi_cut5_long$replicate, mat_ndvi_cut5_long$time));
+mat_ndvi_cut5_long$id <- as.factor(mat_ndvi_cut5_long$id);
+
+mat_ndvi_cut6_long <- gather(mat_ndvi_cut6, time, value, NDVI_786:NDVI_807);
+mat_ndvi_cut6_long$time <- gsub("NDVI_","",as.character(mat_ndvi_cut6_long$time));
+mat_ndvi_cut6_long$time <- as.numeric(mat_ndvi_cut6_long$time);
+mat_ndvi_cut6_long$time_zeroed <- mat_ndvi_cut6_long$time - min(mat_ndvi_cut6_long$time);
+mat_ndvi_cut6_long$rep_time <- as.factor(paste(mat_ndvi_cut6_long$replicate, mat_ndvi_cut6_long$time));
+mat_ndvi_cut6_long$id <- as.factor(mat_ndvi_cut6_long$id);
+```
+
+#### Building some combined dataframes for combined analyses:
+
+* The first year consisting of cuts 1 to 3:
+
+```{r, echo=FALSE}
+mat_ndvi_cut1_cut2_cut3_long <- rbind(mat_ndvi_cut1_long, mat_ndvi_cut2_long, mat_ndvi_cut3_long)
+mat_ndvi_cut1_cut2_cut3_long$cut <- as.factor(mat_ndvi_cut1_cut2_cut3_long$cut)
+```
+
+* The spring cutting consisting of cuts 1 and 4:
+
+```{r, echo=FALSE}
+mat_ndvi_cut1_cut4_long <- rbind(mat_ndvi_cut1_long, mat_ndvi_cut4_long)
+mat_ndvi_cut1_cut4_long$cut <- as.factor(mat_ndvi_cut1_cut4_long$cut)
+```
+
+* The non-spring cuttings consisting of cuts 2, 3, 5, and 6:
+
+```{r, echo=FALSE}
+mat_ndvi_cut2_cut3_cut5_cut6_long <- rbind(mat_ndvi_cut2_long, mat_ndvi_cut3_long, mat_ndvi_cut5_long, mat_ndvi_cut6_long)
+mat_ndvi_cut2_cut3_cut5_cut6_long$cut <- as.factor(mat_ndvi_cut2_cut3_cut5_cut6_long$cut)
+```
+
+* All cuttings 1-6:
+
+```{r, echo=FALSE}
+mat_ndvi_cut1_cut2_cut3_cut4_cut5_cut6_long <- rbind(mat_ndvi_cut1_long, mat_ndvi_cut2_long, mat_ndvi_cut3_long, mat_ndvi_cut4_long, mat_ndvi_cut5_long, mat_ndvi_cut6_long)
+mat_ndvi_cut1_cut2_cut3_cut4_cut5_cut6_long$cut <- as.factor(mat_ndvi_cut1_cut2_cut3_cut4_cut5_cut6_long$cut)
+```
+
+#### Run Sommer 2D Spline Spatial corrections on all NDVI time points individually:
+
+```{r, results='hide'}
+W <- with(mat, spl2Da(rowNumber, colNumber));
+X <- W$Z$`A:all`;
+
+mix_ndvi_2dspl_321 <- mmer(NDVI_321 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_321 <- X %*% mix_ndvi_2dspl_321$U$`A:all`$NDVI_321;
+
+mix_ndvi_2dspl_325 <- mmer(NDVI_325 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_325 <- X %*% mix_ndvi_2dspl_325$U$`A:all`$NDVI_325;
+
+mix_ndvi_2dspl_336 <- mmer(NDVI_336 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_336 <- X %*% mix_ndvi_2dspl_336$U$`A:all`$NDVI_336;
+
+mix_ndvi_2dspl_343 <- mmer(NDVI_343 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_343 <- X %*% mix_ndvi_2dspl_343$U$`A:all`$NDVI_343;
+
+mix_ndvi_2dspl_350 <- mmer(NDVI_350 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_350 <- X %*% mix_ndvi_2dspl_350$U$`A:all`$NDVI_350;
+
+mix_ndvi_2dspl_373 <- mmer(NDVI_373 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_373 <- X %*% mix_ndvi_2dspl_373$U$`A:all`$NDVI_373;
+
+mix_ndvi_2dspl_376 <- mmer(NDVI_376 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_376 <- X %*% mix_ndvi_2dspl_376$U$`A:all`$NDVI_376;
+
+mix_ndvi_2dspl_383 <- mmer(NDVI_383 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_383 <- X %*% mix_ndvi_2dspl_383$U$`A:all`$NDVI_383;
+
+mix_ndvi_2dspl_389 <- mmer(NDVI_389 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_389 <- X %*% mix_ndvi_2dspl_389$U$`A:all`$NDVI_389;
+
+mix_ndvi_2dspl_403 <- mmer(NDVI_403 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_403 <- X %*% mix_ndvi_2dspl_403$U$`A:all`$NDVI_403;
+
+mix_ndvi_2dspl_431 <- mmer(NDVI_431 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_431 <- X %*% mix_ndvi_2dspl_431$U$`A:all`$NDVI_431;
+
+mix_ndvi_2dspl_435 <- mmer(NDVI_435 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_435 <- X %*% mix_ndvi_2dspl_435$U$`A:all`$NDVI_435;
+
+mix_ndvi_2dspl_438 <- mmer(NDVI_438 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_438 <- X %*% mix_ndvi_2dspl_438$U$`A:all`$NDVI_438;
+
+mix_ndvi_2dspl_671 <- mmer(NDVI_671 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_671 <- X %*% mix_ndvi_2dspl_671$U$`A:all`$NDVI_671;
+
+mix_ndvi_2dspl_677 <- mmer(NDVI_677 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_677 <- X %*% mix_ndvi_2dspl_677$U$`A:all`$NDVI_677;
+
+mix_ndvi_2dspl_681 <- mmer(NDVI_681 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_681 <- X %*% mix_ndvi_2dspl_681$U$`A:all`$NDVI_681;
+
+mix_ndvi_2dspl_705 <- mmer(NDVI_705 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_705 <- X %*% mix_ndvi_2dspl_705$U$`A:all`$NDVI_705;
+
+mix_ndvi_2dspl_708 <- mmer(NDVI_708 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_708 <- X %*% mix_ndvi_2dspl_708$U$`A:all`$NDVI_708;
+
+mix_ndvi_2dspl_715 <- mmer(NDVI_715 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_715 <- X %*% mix_ndvi_2dspl_715$U$`A:all`$NDVI_715;
+
+mix_ndvi_2dspl_723 <- mmer(NDVI_723 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_723 <- X %*% mix_ndvi_2dspl_723$U$`A:all`$NDVI_723;
+
+mix_ndvi_2dspl_740 <- mmer(NDVI_740 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_740 <- X %*% mix_ndvi_2dspl_740$U$`A:all`$NDVI_740;
+
+mix_ndvi_2dspl_743 <- mmer(NDVI_743 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_743 <- X %*% mix_ndvi_2dspl_743$U$`A:all`$NDVI_743;
+
+mix_ndvi_2dspl_749 <- mmer(NDVI_749 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_749 <- X %*% mix_ndvi_2dspl_749$U$`A:all`$NDVI_749;
+
+mix_ndvi_2dspl_756 <- mmer(NDVI_756 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_756 <- X %*% mix_ndvi_2dspl_756$U$`A:all`$NDVI_756;
+
+mix_ndvi_2dspl_762 <- mmer(NDVI_762 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_762 <- X %*% mix_ndvi_2dspl_762$U$`A:all`$NDVI_762;
+
+mix_ndvi_2dspl_768 <- mmer(NDVI_768 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_768 <- X %*% mix_ndvi_2dspl_768$U$`A:all`$NDVI_768;
+
+mix_ndvi_2dspl_772 <- mmer(NDVI_772 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_772 <- X %*% mix_ndvi_2dspl_772$U$`A:all`$NDVI_772;
+
+mix_ndvi_2dspl_786 <- mmer(NDVI_786 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_786 <- X %*% mix_ndvi_2dspl_786$U$`A:all`$NDVI_786;
+
+mix_ndvi_2dspl_790 <- mmer(NDVI_790 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_790 <- X %*% mix_ndvi_2dspl_790$U$`A:all`$NDVI_790;
+
+mix_ndvi_2dspl_800 <- mmer(NDVI_800 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_800 <- X %*% mix_ndvi_2dspl_800$U$`A:all`$NDVI_800;
+
+mix_ndvi_2dspl_804 <- mmer(NDVI_804 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_804 <- X %*% mix_ndvi_2dspl_804$U$`A:all`$NDVI_804;
+
+mix_ndvi_2dspl_807 <- mmer(NDVI_807 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_NDVI_807 <- X %*% mix_ndvi_2dspl_807$U$`A:all`$NDVI_807;
+```
+
+#### For each cut collect the spatially corrected NDVI plot level values by subtracting spatial effect from NDVI:
+
+```{r, echo=FALSE}
+mat_ndvi_2dspl_corrected_cut1 <- data.frame(id=mat$germplasmName, plot_id=mat$observationUnitName, replicate=mat$replicate, rowNumber=mat$rowNumber, colNumber=mat$colNumber, cut=rep(1,nrow(mat)), NDVI_321=mat$NDVI_321-blups_2dspl_NDVI_321, NDVI_325=mat$NDVI_325-blups_2dspl_NDVI_325, NDVI_336=mat$NDVI_336-blups_2dspl_NDVI_336, NDVI_343=mat$NDVI_343-blups_2dspl_NDVI_343, NDVI_350=mat$NDVI_350-blups_2dspl_NDVI_350)
+
+mat_ndvi_2dspl_corrected_cut2 <- data.frame(id=mat$germplasmName, plot_id=mat$observationUnitName, replicate=mat$replicate, rowNumber=mat$rowNumber, colNumber=mat$colNumber, cut=rep(2,nrow(mat)), NDVI_373=mat$NDVI_373-blups_2dspl_NDVI_373, NDVI_376=mat$NDVI_376-blups_2dspl_NDVI_376, NDVI_383=mat$NDVI_383-blups_2dspl_NDVI_383, NDVI_389=mat$NDVI_389-blups_2dspl_NDVI_389)
+
+mat_ndvi_2dspl_corrected_cut3 <- data.frame(id=mat$germplasmName, plot_id=mat$observationUnitName, replicate=mat$replicate, rowNumber=mat$rowNumber, colNumber=mat$colNumber, cut=rep(3,nrow(mat)), NDVI_403=mat$NDVI_403-blups_2dspl_NDVI_403, NDVI_431=mat$NDVI_431-blups_2dspl_NDVI_431, NDVI_435=mat$NDVI_435-blups_2dspl_NDVI_435, NDVI_438=mat$NDVI_438-blups_2dspl_NDVI_438)
+
+mat_ndvi_2dspl_corrected_cut4 <- data.frame(id=mat$germplasmName, plot_id=mat$observationUnitName, replicate=mat$replicate, rowNumber=mat$rowNumber, colNumber=mat$colNumber, cut=rep(4,nrow(mat)), NDVI_671=mat$NDVI_671-blups_2dspl_NDVI_671, NDVI_677=mat$NDVI_677-blups_2dspl_NDVI_677, NDVI_681=mat$NDVI_681-blups_2dspl_NDVI_681, NDVI_705=mat$NDVI_705-blups_2dspl_NDVI_705, NDVI_708=mat$NDVI_708-blups_2dspl_NDVI_708, NDVI_715=mat$NDVI_715-blups_2dspl_NDVI_715, NDVI_723=mat$NDVI_723-blups_2dspl_NDVI_723)
+
+mat_ndvi_2dspl_corrected_cut5 <- data.frame(id=mat$germplasmName, plot_id=mat$observationUnitName, replicate=mat$replicate, rowNumber=mat$rowNumber, colNumber=mat$colNumber, cut=rep(5,nrow(mat)), NDVI_740=mat$NDVI_740-blups_2dspl_NDVI_740, NDVI_743=mat$NDVI_743-blups_2dspl_NDVI_743, NDVI_749=mat$NDVI_749-blups_2dspl_NDVI_749, NDVI_756=mat$NDVI_756-blups_2dspl_NDVI_756, NDVI_762=mat$NDVI_762-blups_2dspl_NDVI_762, NDVI_768=mat$NDVI_768-blups_2dspl_NDVI_768, NDVI_772=mat$NDVI_772-blups_2dspl_NDVI_772)
+
+mat_ndvi_2dspl_corrected_cut6 <- data.frame(id=mat$germplasmName, plot_id=mat$observationUnitName, replicate=mat$replicate, rowNumber=mat$rowNumber, colNumber=mat$colNumber, cut=rep(6,nrow(mat)), NDVI_786=mat$NDVI_786-blups_2dspl_NDVI_786, NDVI_790=mat$NDVI_790-blups_2dspl_NDVI_790, NDVI_800=mat$NDVI_800-blups_2dspl_NDVI_800, NDVI_804=mat$NDVI_804-blups_2dspl_NDVI_804, NDVI_807=mat$NDVI_807-blups_2dspl_NDVI_807)
+```
+
+#### Foreach cut reformat the spatially corrected NDVI into a long datatable with time as numeric DAP:
+
+```{r, echo=FALSE}
+mat_ndvi_2dspl_corrected_cut1_long <- gather(mat_ndvi_2dspl_corrected_cut1, time, value, NDVI_321:NDVI_350);
+mat_ndvi_2dspl_corrected_cut1_long$time <- gsub("NDVI_","",as.character(mat_ndvi_2dspl_corrected_cut1_long$time));
+mat_ndvi_2dspl_corrected_cut1_long$time <- as.numeric(mat_ndvi_2dspl_corrected_cut1_long$time);
+mat_ndvi_2dspl_corrected_cut1_long$time_zeroed <- mat_ndvi_2dspl_corrected_cut1_long$time - min(mat_ndvi_2dspl_corrected_cut1_long$time);
+mat_ndvi_2dspl_corrected_cut1_long$rep_time <- as.factor(paste(mat_ndvi_2dspl_corrected_cut1_long$replicate, mat_ndvi_2dspl_corrected_cut1_long$time));
+mat_ndvi_2dspl_corrected_cut1_long$id <- as.factor(mat_ndvi_2dspl_corrected_cut1_long$id);
+mat_ndvi_2dspl_corrected_cut1_long$plot_id <- as.factor(mat_ndvi_2dspl_corrected_cut1_long$plot_id);
+
+mat_ndvi_2dspl_corrected_cut2_long <- gather(mat_ndvi_2dspl_corrected_cut2, time, value, NDVI_373:NDVI_389);
+mat_ndvi_2dspl_corrected_cut2_long$time <- gsub("NDVI_","",as.character(mat_ndvi_2dspl_corrected_cut2_long$time));
+mat_ndvi_2dspl_corrected_cut2_long$time <- as.numeric(mat_ndvi_2dspl_corrected_cut2_long$time);
+mat_ndvi_2dspl_corrected_cut2_long$time_zeroed <- mat_ndvi_2dspl_corrected_cut2_long$time - min(mat_ndvi_2dspl_corrected_cut2_long$time);
+mat_ndvi_2dspl_corrected_cut2_long$rep_time <- as.factor(paste(mat_ndvi_2dspl_corrected_cut2_long$replicate, mat_ndvi_2dspl_corrected_cut2_long$time));
+mat_ndvi_2dspl_corrected_cut2_long$id <- as.factor(mat_ndvi_2dspl_corrected_cut2_long$id);
+mat_ndvi_2dspl_corrected_cut2_long$plot_id <- as.factor(mat_ndvi_2dspl_corrected_cut2_long$plot_id);
+
+mat_ndvi_2dspl_corrected_cut3_long <- gather(mat_ndvi_2dspl_corrected_cut3, time, value, NDVI_403:NDVI_438);
+mat_ndvi_2dspl_corrected_cut3_long$time <- gsub("NDVI_","",as.character(mat_ndvi_2dspl_corrected_cut3_long$time));
+mat_ndvi_2dspl_corrected_cut3_long$time <- as.numeric(mat_ndvi_2dspl_corrected_cut3_long$time);
+mat_ndvi_2dspl_corrected_cut3_long$time_zeroed <- mat_ndvi_2dspl_corrected_cut3_long$time - min(mat_ndvi_2dspl_corrected_cut3_long$time);
+mat_ndvi_2dspl_corrected_cut3_long$rep_time <- as.factor(paste(mat_ndvi_2dspl_corrected_cut3_long$replicate, mat_ndvi_2dspl_corrected_cut3_long$time));
+mat_ndvi_2dspl_corrected_cut3_long$id <- as.factor(mat_ndvi_2dspl_corrected_cut3_long$id);
+
+mat_ndvi_2dspl_corrected_cut4_long <- gather(mat_ndvi_2dspl_corrected_cut4, time, value, NDVI_671:NDVI_723);
+mat_ndvi_2dspl_corrected_cut4_long$time <- gsub("NDVI_","",as.character(mat_ndvi_2dspl_corrected_cut4_long$time));
+mat_ndvi_2dspl_corrected_cut4_long$time <- as.numeric(mat_ndvi_2dspl_corrected_cut4_long$time);
+mat_ndvi_2dspl_corrected_cut4_long$time_zeroed <- mat_ndvi_2dspl_corrected_cut4_long$time - min(mat_ndvi_2dspl_corrected_cut4_long$time);
+mat_ndvi_2dspl_corrected_cut4_long$rep_time <- as.factor(paste(mat_ndvi_2dspl_corrected_cut4_long$replicate, mat_ndvi_2dspl_corrected_cut4_long$time));
+mat_ndvi_2dspl_corrected_cut4_long$id <- as.factor(mat_ndvi_2dspl_corrected_cut4_long$id);
+
+mat_ndvi_2dspl_corrected_cut5_long <- gather(mat_ndvi_2dspl_corrected_cut5, time, value, NDVI_740:NDVI_772);
+mat_ndvi_2dspl_corrected_cut5_long$time <- gsub("NDVI_","",as.character(mat_ndvi_2dspl_corrected_cut5_long$time));
+mat_ndvi_2dspl_corrected_cut5_long$time <- as.numeric(mat_ndvi_2dspl_corrected_cut5_long$time);
+mat_ndvi_2dspl_corrected_cut5_long$time_zeroed <- mat_ndvi_2dspl_corrected_cut5_long$time - min(mat_ndvi_2dspl_corrected_cut5_long$time);
+mat_ndvi_2dspl_corrected_cut5_long$rep_time <- as.factor(paste(mat_ndvi_2dspl_corrected_cut5_long$replicate, mat_ndvi_2dspl_corrected_cut5_long$time));
+mat_ndvi_2dspl_corrected_cut5_long$id <- as.factor(mat_ndvi_2dspl_corrected_cut5_long$id);
+
+mat_ndvi_2dspl_corrected_cut6_long <- gather(mat_ndvi_2dspl_corrected_cut6, time, value, NDVI_786:NDVI_807);
+mat_ndvi_2dspl_corrected_cut6_long$time <- gsub("NDVI_","",as.character(mat_ndvi_2dspl_corrected_cut6_long$time));
+mat_ndvi_2dspl_corrected_cut6_long$time <- as.numeric(mat_ndvi_2dspl_corrected_cut6_long$time);
+mat_ndvi_2dspl_corrected_cut6_long$time_zeroed <- mat_ndvi_2dspl_corrected_cut6_long$time - min(mat_ndvi_2dspl_corrected_cut6_long$time);
+mat_ndvi_2dspl_corrected_cut6_long$rep_time <- as.factor(paste(mat_ndvi_2dspl_corrected_cut6_long$replicate, mat_ndvi_2dspl_corrected_cut6_long$time));
+mat_ndvi_2dspl_corrected_cut6_long$id <- as.factor(mat_ndvi_2dspl_corrected_cut6_long$id);
+```
+
+#### Foreach of the 6 cuttings and foreach field plot run L.4 DRM, extract the L.4 coefficient values, and extract the predicted L.4 values across time:
+
+```{r, echo=FALSE, warning=FALSE}
+l4_coeff_b_cut1_2dspl_corrected <- c(); l4_coeff_c_cut1_2dspl_corrected <- c(); l4_coeff_d_cut1_2dspl_corrected <- c(); l4_coeff_e_cut1_2dspl_corrected <- c();
+l4_coeff_b_cut2_2dspl_corrected <- c(); l4_coeff_c_cut2_2dspl_corrected <- c(); l4_coeff_d_cut2_2dspl_corrected <- c(); l4_coeff_e_cut2_2dspl_corrected <- c();
+l4_coeff_b_cut3_2dspl_corrected <- c(); l4_coeff_c_cut3_2dspl_corrected <- c(); l4_coeff_d_cut3_2dspl_corrected <- c(); l4_coeff_e_cut3_2dspl_corrected <- c();
+l4_coeff_b_cut4_2dspl_corrected <- c(); l4_coeff_c_cut4_2dspl_corrected <- c(); l4_coeff_d_cut4_2dspl_corrected <- c(); l4_coeff_e_cut4_2dspl_corrected <- c();
+l4_coeff_b_cut5_2dspl_corrected <- c(); l4_coeff_c_cut5_2dspl_corrected <- c(); l4_coeff_d_cut5_2dspl_corrected <- c(); l4_coeff_e_cut5_2dspl_corrected <- c();
+l4_coeff_b_cut6_2dspl_corrected <- c(); l4_coeff_c_cut6_2dspl_corrected <- c(); l4_coeff_d_cut6_2dspl_corrected <- c(); l4_coeff_e_cut6_2dspl_corrected <- c();
+
+mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_inc <- c()
+mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_cuts <- c()
+mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_genos <- c()
+mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_x <- c()
+mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_y <- c()
+mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_sd_min <- c()
+mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_sd_max <- c()
+
+for (row in 1:nrow(mat_ndvi_2dspl_corrected_cut1)) {
+  plot_id = mat_ndvi_2dspl_corrected_cut1[row, 'plot_id']
+  
+  model_c1 <- drm(value ~ time_zeroed, fct = L.4(), data = mat_ndvi_2dspl_corrected_cut1_long[mat_ndvi_2dspl_corrected_cut1_long$plot_id == plot_id, ])
+  l4_coeff_b_cut1_2dspl_corrected <- append(l4_coeff_b_cut1_2dspl_corrected, model_c1$coefficients[1])
+  l4_coeff_c_cut1_2dspl_corrected <- append(l4_coeff_c_cut1_2dspl_corrected, model_c1$coefficients[2])
+  l4_coeff_d_cut1_2dspl_corrected <- append(l4_coeff_d_cut1_2dspl_corrected, model_c1$coefficients[3])
+  l4_coeff_e_cut1_2dspl_corrected <- append(l4_coeff_e_cut1_2dspl_corrected, model_c1$coefficients[4])
+  
+  mat_ndvi_2dspl_corrected_geno_2dspl_fits_cut1_inc <- seq(0, max(mat_ndvi_2dspl_corrected_cut1_long$time_zeroed), length=100)
+  mat_ndvi_2dspl_corrected_geno_2dspl_fits_cut1 <- expand.grid(time_zeroed=mat_ndvi_2dspl_corrected_geno_2dspl_fits_cut1_inc)
+  model_c1_pm <- predict(model_c1, newdata=mat_ndvi_2dspl_corrected_geno_2dspl_fits_cut1, interval="confidence") 
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_inc <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_inc, seq(1,100))
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_cuts <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_cuts, rep("Spring 2020", length(model_c1_pm[,1])) )
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_genos <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_genos, rep(plot_id, length(model_c1_pm[,1])) )
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_x <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_x, mat_ndvi_2dspl_corrected_geno_2dspl_fits_cut1$time_zeroed)
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_y <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_y, model_c1_pm[,1])
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_sd_min <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_sd_min, model_c1_pm[,2])
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_sd_max <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_sd_max, model_c1_pm[,3])
+  
+  model_c2 <- drm(value ~ time_zeroed, fct = L.4(), data = mat_ndvi_2dspl_corrected_cut2_long[mat_ndvi_2dspl_corrected_cut2_long$plot_id == plot_id, ])
+  l4_coeff_b_cut2_2dspl_corrected <- append(l4_coeff_b_cut2_2dspl_corrected, model_c2$coefficients[1])
+  l4_coeff_c_cut2_2dspl_corrected <- append(l4_coeff_c_cut2_2dspl_corrected, model_c2$coefficients[2])
+  l4_coeff_d_cut2_2dspl_corrected <- append(l4_coeff_d_cut2_2dspl_corrected, model_c2$coefficients[3])
+  l4_coeff_e_cut2_2dspl_corrected <- append(l4_coeff_e_cut2_2dspl_corrected, model_c2$coefficients[4])
+  
+  mat_ndvi_2dspl_corrected_geno_2dspl_fits_cut2_inc <- seq(0, max(mat_ndvi_2dspl_corrected_cut2_long$time_zeroed), length=100)
+  mat_ndvi_2dspl_corrected_geno_2dspl_fits_cut2 <- expand.grid(time_zeroed=mat_ndvi_2dspl_corrected_geno_2dspl_fits_cut2_inc)
+  model_c2_pm <- predict(model_c2, newdata=mat_ndvi_2dspl_corrected_geno_2dspl_fits_cut2, interval="confidence")
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_inc <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_inc, seq(1,100))
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_cuts <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_cuts, rep("Summer 2020", length(model_c2_pm[,1])) )
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_genos <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_genos, rep(plot_id, length(model_c2_pm[,1])) )
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_x <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_x, mat_ndvi_2dspl_corrected_geno_2dspl_fits_cut2$time_zeroed)
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_y <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_y, model_c2_pm[,1])
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_sd_min <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_sd_min, model_c2_pm[,2])
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_sd_max <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_sd_max, model_c2_pm[,3])
+  
+  model_c3 <- drm(value ~ time_zeroed, fct = L.4(), data = mat_ndvi_2dspl_corrected_cut3_long[mat_ndvi_2dspl_corrected_cut3_long$plot_id == plot_id, ])
+  l4_coeff_b_cut3_2dspl_corrected <- append(l4_coeff_b_cut3_2dspl_corrected, model_c3$coefficients[1])
+  l4_coeff_c_cut3_2dspl_corrected <- append(l4_coeff_c_cut3_2dspl_corrected, model_c3$coefficients[2])
+  l4_coeff_d_cut3_2dspl_corrected <- append(l4_coeff_d_cut3_2dspl_corrected, model_c3$coefficients[3])
+  l4_coeff_e_cut3_2dspl_corrected <- append(l4_coeff_e_cut3_2dspl_corrected, model_c3$coefficients[4])
+  
+  mat_ndvi_2dspl_corrected_geno_2dspl_fits_cut3_inc <- seq(0, max(mat_ndvi_2dspl_corrected_cut3_long$time_zeroed), length=100)
+  mat_ndvi_2dspl_corrected_geno_2dspl_fits_cut3 <- expand.grid(time_zeroed=mat_ndvi_2dspl_corrected_geno_2dspl_fits_cut3_inc)
+  model_c3_pm <- predict(model_c3, newdata=mat_ndvi_2dspl_corrected_geno_2dspl_fits_cut3, interval="confidence") 
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_inc <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_inc, seq(1,100))
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_cuts <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_cuts, rep("Fall 2020", length(model_c3_pm[,1])) )
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_genos <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_genos, rep(plot_id, length(model_c3_pm[,1])) )
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_x <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_x, mat_ndvi_2dspl_corrected_geno_2dspl_fits_cut3$time_zeroed)
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_y <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_y, model_c3_pm[,1])
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_sd_min <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_sd_min, model_c3_pm[,2])
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_sd_max <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_sd_max, model_c3_pm[,3])
+  
+  model_c4 <- drm(value ~ time_zeroed, fct = L.4(), data = mat_ndvi_2dspl_corrected_cut4_long[mat_ndvi_2dspl_corrected_cut4_long$plot_id == plot_id, ])
+  l4_coeff_b_cut4_2dspl_corrected <- append(l4_coeff_b_cut4_2dspl_corrected, model_c4$coefficients[1])
+  l4_coeff_c_cut4_2dspl_corrected <- append(l4_coeff_c_cut4_2dspl_corrected, model_c4$coefficients[2])
+  l4_coeff_d_cut4_2dspl_corrected <- append(l4_coeff_d_cut4_2dspl_corrected, model_c4$coefficients[3])
+  l4_coeff_e_cut4_2dspl_corrected <- append(l4_coeff_e_cut4_2dspl_corrected, model_c4$coefficients[4])
+  
+  mat_ndvi_2dspl_corrected_geno_2dspl_fits_cut4_inc <- seq(0, max(mat_ndvi_2dspl_corrected_cut4_long$time_zeroed), length=100)
+  mat_ndvi_2dspl_corrected_geno_2dspl_fits_cut4 <- expand.grid(time_zeroed=mat_ndvi_2dspl_corrected_geno_2dspl_fits_cut4_inc)
+  model_c4_pm <- predict(model_c4, newdata=mat_ndvi_2dspl_corrected_geno_2dspl_fits_cut4, interval="confidence") 
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_inc <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_inc, seq(1,100))
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_cuts <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_cuts, rep("Spring 2021", length(model_c4_pm[,1])) )
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_genos <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_genos, rep(plot_id, length(model_c4_pm[,1])) )
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_x <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_x, mat_ndvi_2dspl_corrected_geno_2dspl_fits_cut4$time_zeroed)
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_y <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_y, model_c4_pm[,1])
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_sd_min <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_sd_min, model_c4_pm[,2])
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_sd_max <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_sd_max, model_c4_pm[,3])
+  
+  model_c5 <- drm(value ~ time_zeroed, fct = L.4(), data = mat_ndvi_2dspl_corrected_cut5_long[mat_ndvi_2dspl_corrected_cut5_long$plot_id == plot_id, ])
+  l4_coeff_b_cut5_2dspl_corrected <- append(l4_coeff_b_cut5_2dspl_corrected, model_c5$coefficients[1])
+  l4_coeff_c_cut5_2dspl_corrected <- append(l4_coeff_c_cut5_2dspl_corrected, model_c5$coefficients[2])
+  l4_coeff_d_cut5_2dspl_corrected <- append(l4_coeff_d_cut5_2dspl_corrected, model_c5$coefficients[3])
+  l4_coeff_e_cut5_2dspl_corrected <- append(l4_coeff_e_cut5_2dspl_corrected, model_c5$coefficients[4])
+  
+  mat_ndvi_2dspl_corrected_geno_2dspl_fits_cut5_inc <- seq(0, max(mat_ndvi_2dspl_corrected_cut5_long$time_zeroed), length=100)
+  mat_ndvi_2dspl_corrected_geno_2dspl_fits_cut5 <- expand.grid(time_zeroed=mat_ndvi_2dspl_corrected_geno_2dspl_fits_cut5_inc)
+  model_c5_pm <- predict(model_c5, newdata=mat_ndvi_2dspl_corrected_geno_2dspl_fits_cut5, interval="confidence")
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_inc <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_inc, seq(1,100))
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_cuts <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_cuts, rep("Summer 2021", length(model_c5_pm[,1])) )
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_genos <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_genos, rep(plot_id, length(model_c5_pm[,1])) )
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_x <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_x, mat_ndvi_2dspl_corrected_geno_2dspl_fits_cut5$time_zeroed)
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_y <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_y, model_c5_pm[,1])
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_sd_min <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_sd_min, model_c5_pm[,2])
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_sd_max <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_sd_max, model_c5_pm[,3])
+  
+  model_c6 <- drm(value ~ time_zeroed, fct = L.4(), data = mat_ndvi_2dspl_corrected_cut6_long[mat_ndvi_2dspl_corrected_cut6_long$plot_id == plot_id, ])
+  l4_coeff_b_cut6_2dspl_corrected <- append(l4_coeff_b_cut6_2dspl_corrected, model_c6$coefficients[1])
+  l4_coeff_c_cut6_2dspl_corrected <- append(l4_coeff_c_cut6_2dspl_corrected, model_c6$coefficients[2])
+  l4_coeff_d_cut6_2dspl_corrected <- append(l4_coeff_d_cut6_2dspl_corrected, model_c6$coefficients[3])
+  l4_coeff_e_cut6_2dspl_corrected <- append(l4_coeff_e_cut6_2dspl_corrected, model_c6$coefficients[4])
+  
+  mat_ndvi_2dspl_corrected_geno_2dspl_fits_cut6_inc <- seq(0, max(mat_ndvi_2dspl_corrected_cut6_long$time_zeroed), length=100)
+  mat_ndvi_2dspl_corrected_geno_2dspl_fits_cut6 <- expand.grid(time_zeroed=mat_ndvi_2dspl_corrected_geno_2dspl_fits_cut6_inc)
+  model_c6_pm <- predict(model_c6, newdata=mat_ndvi_2dspl_corrected_geno_2dspl_fits_cut6, interval="confidence")
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_inc <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_inc, seq(1,100))
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_cuts <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_cuts, rep("Fall 2021", length(model_c6_pm[,1])) )
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_genos <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_genos, rep(plot_id, length(model_c6_pm[,1])) )
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_x <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_x, mat_ndvi_2dspl_corrected_geno_2dspl_fits_cut6$time_zeroed)
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_y <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_y, model_c6_pm[,1])
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_sd_min <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_sd_min, model_c6_pm[,2])
+  mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_sd_max <- append(mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_sd_max, model_c6_pm[,3])
+}
+```
+
+#### Foreach cutting save each plot's L.4 coefficients:
+
+```{r, echo=FALSE}
+mat_ndvi_2dspl_corrected_cut1$l4_coeff_b_cut1 <- l4_coeff_b_cut1_2dspl_corrected
+mat_ndvi_2dspl_corrected_cut1$l4_coeff_c_cut1 <- l4_coeff_c_cut1_2dspl_corrected
+mat_ndvi_2dspl_corrected_cut1$l4_coeff_d_cut1 <- l4_coeff_d_cut1_2dspl_corrected
+mat_ndvi_2dspl_corrected_cut1$l4_coeff_e_cut1 <- l4_coeff_e_cut1_2dspl_corrected
+
+mat_ndvi_2dspl_corrected_cut2$l4_coeff_b_cut2 <- l4_coeff_b_cut2_2dspl_corrected
+mat_ndvi_2dspl_corrected_cut2$l4_coeff_c_cut2 <- l4_coeff_c_cut2_2dspl_corrected
+mat_ndvi_2dspl_corrected_cut2$l4_coeff_d_cut2 <- l4_coeff_d_cut2_2dspl_corrected
+mat_ndvi_2dspl_corrected_cut2$l4_coeff_e_cut2 <- l4_coeff_e_cut2_2dspl_corrected
+
+mat_ndvi_2dspl_corrected_cut3$l4_coeff_b_cut3 <- l4_coeff_b_cut3_2dspl_corrected
+mat_ndvi_2dspl_corrected_cut3$l4_coeff_c_cut3 <- l4_coeff_c_cut3_2dspl_corrected
+mat_ndvi_2dspl_corrected_cut3$l4_coeff_d_cut3 <- l4_coeff_d_cut3_2dspl_corrected
+mat_ndvi_2dspl_corrected_cut3$l4_coeff_e_cut3 <- l4_coeff_e_cut3_2dspl_corrected
+
+mat_ndvi_2dspl_corrected_cut4$l4_coeff_b_cut4 <- l4_coeff_b_cut4_2dspl_corrected
+mat_ndvi_2dspl_corrected_cut4$l4_coeff_c_cut4 <- l4_coeff_c_cut4_2dspl_corrected
+mat_ndvi_2dspl_corrected_cut4$l4_coeff_d_cut4 <- l4_coeff_d_cut4_2dspl_corrected
+mat_ndvi_2dspl_corrected_cut4$l4_coeff_e_cut4 <- l4_coeff_e_cut4_2dspl_corrected
+
+mat_ndvi_2dspl_corrected_cut5$l4_coeff_b_cut5 <- l4_coeff_b_cut5_2dspl_corrected
+mat_ndvi_2dspl_corrected_cut5$l4_coeff_c_cut5 <- l4_coeff_c_cut5_2dspl_corrected
+mat_ndvi_2dspl_corrected_cut5$l4_coeff_d_cut5 <- l4_coeff_d_cut5_2dspl_corrected
+mat_ndvi_2dspl_corrected_cut5$l4_coeff_e_cut5 <- l4_coeff_e_cut5_2dspl_corrected
+
+mat_ndvi_2dspl_corrected_cut6$l4_coeff_b_cut6 <- l4_coeff_b_cut6_2dspl_corrected
+mat_ndvi_2dspl_corrected_cut6$l4_coeff_c_cut6 <- l4_coeff_c_cut6_2dspl_corrected
+mat_ndvi_2dspl_corrected_cut6$l4_coeff_d_cut6 <- l4_coeff_d_cut6_2dspl_corrected
+mat_ndvi_2dspl_corrected_cut6$l4_coeff_e_cut6 <- l4_coeff_e_cut6_2dspl_corrected
+```
+
+#### Make combined dataframes of each plot's L.4 coefficients:
+
+* This dataframe has L.4 coefficients for all 6 cuttings:
+
+```{r, echo=FALSE}
+mat_ndvi_2dspl_corrected_all_cuts <- rbind(
+  data.frame(id=mat_ndvi_2dspl_corrected_cut1$id, plot_id=mat_ndvi_2dspl_corrected_cut1$plot_id, replicate=mat_ndvi_2dspl_corrected_cut1$replicate, rowNumber=mat_ndvi_2dspl_corrected_cut1$rowNumber, colNumber=mat_ndvi_2dspl_corrected_cut1$colNumber, cut=mat_ndvi_2dspl_corrected_cut1$cut, l4_coeff_b=mat_ndvi_2dspl_corrected_cut1$l4_coeff_b_cut1, l4_coeff_c=mat_ndvi_2dspl_corrected_cut1$l4_coeff_c_cut1, l4_coeff_d=mat_ndvi_2dspl_corrected_cut1$l4_coeff_d_cut1, l4_coeff_e=mat_ndvi_2dspl_corrected_cut1$l4_coeff_e_cut1),
+  data.frame(id=mat_ndvi_2dspl_corrected_cut2$id, plot_id=mat_ndvi_2dspl_corrected_cut2$plot_id, replicate=mat_ndvi_2dspl_corrected_cut2$replicate, rowNumber=mat_ndvi_2dspl_corrected_cut2$rowNumber, colNumber=mat_ndvi_2dspl_corrected_cut2$colNumber, cut=mat_ndvi_2dspl_corrected_cut2$cut, l4_coeff_b=mat_ndvi_2dspl_corrected_cut2$l4_coeff_b_cut2, l4_coeff_c=mat_ndvi_2dspl_corrected_cut2$l4_coeff_c_cut2, l4_coeff_d=mat_ndvi_2dspl_corrected_cut2$l4_coeff_d_cut2, l4_coeff_e=mat_ndvi_2dspl_corrected_cut2$l4_coeff_e_cut2),
+  data.frame(id=mat_ndvi_2dspl_corrected_cut3$id, plot_id=mat_ndvi_2dspl_corrected_cut3$plot_id, replicate=mat_ndvi_2dspl_corrected_cut3$replicate, rowNumber=mat_ndvi_2dspl_corrected_cut3$rowNumber, colNumber=mat_ndvi_2dspl_corrected_cut3$colNumber, cut=mat_ndvi_2dspl_corrected_cut3$cut, l4_coeff_b=mat_ndvi_2dspl_corrected_cut3$l4_coeff_b_cut3, l4_coeff_c=mat_ndvi_2dspl_corrected_cut3$l4_coeff_c_cut3, l4_coeff_d=mat_ndvi_2dspl_corrected_cut3$l4_coeff_d_cut3, l4_coeff_e=mat_ndvi_2dspl_corrected_cut3$l4_coeff_e_cut3),
+  data.frame(id=mat_ndvi_2dspl_corrected_cut4$id, plot_id=mat_ndvi_2dspl_corrected_cut4$plot_id, replicate=mat_ndvi_2dspl_corrected_cut4$replicate, rowNumber=mat_ndvi_2dspl_corrected_cut4$rowNumber, colNumber=mat_ndvi_2dspl_corrected_cut4$colNumber, cut=mat_ndvi_2dspl_corrected_cut4$cut, l4_coeff_b=mat_ndvi_2dspl_corrected_cut4$l4_coeff_b_cut4, l4_coeff_c=mat_ndvi_2dspl_corrected_cut4$l4_coeff_c_cut4, l4_coeff_d=mat_ndvi_2dspl_corrected_cut4$l4_coeff_d_cut4, l4_coeff_e=mat_ndvi_2dspl_corrected_cut4$l4_coeff_e_cut4),
+  data.frame(id=mat_ndvi_2dspl_corrected_cut5$id, plot_id=mat_ndvi_2dspl_corrected_cut5$plot_id, replicate=mat_ndvi_2dspl_corrected_cut5$replicate, rowNumber=mat_ndvi_2dspl_corrected_cut5$rowNumber, colNumber=mat_ndvi_2dspl_corrected_cut5$colNumber, cut=mat_ndvi_2dspl_corrected_cut5$cut, l4_coeff_b=mat_ndvi_2dspl_corrected_cut5$l4_coeff_b_cut5, l4_coeff_c=mat_ndvi_2dspl_corrected_cut5$l4_coeff_c_cut5, l4_coeff_d=mat_ndvi_2dspl_corrected_cut5$l4_coeff_d_cut5, l4_coeff_e=mat_ndvi_2dspl_corrected_cut5$l4_coeff_e_cut5),
+  data.frame(id=mat_ndvi_2dspl_corrected_cut6$id, plot_id=mat_ndvi_2dspl_corrected_cut6$plot_id, replicate=mat_ndvi_2dspl_corrected_cut6$replicate, rowNumber=mat_ndvi_2dspl_corrected_cut6$rowNumber, colNumber=mat_ndvi_2dspl_corrected_cut6$colNumber, cut=mat_ndvi_2dspl_corrected_cut6$cut, l4_coeff_b=mat_ndvi_2dspl_corrected_cut6$l4_coeff_b_cut6, l4_coeff_c=mat_ndvi_2dspl_corrected_cut6$l4_coeff_c_cut6, l4_coeff_d=mat_ndvi_2dspl_corrected_cut6$l4_coeff_d_cut6, l4_coeff_e=mat_ndvi_2dspl_corrected_cut6$l4_coeff_e_cut6)
+)
+mat_ndvi_2dspl_corrected_all_cuts$rep_cut <- as.factor(paste(mat_ndvi_2dspl_corrected_all_cuts$replicate, mat_ndvi_2dspl_corrected_all_cuts$cut));
+```
+
+* This dataframe has L.4 coefficients for the Spring (Env1) cuttings 1 and 4:
+
+```{r, echo=FALSE}
+mat_ndvi_2dspl_corrected_cuts_env1 <- rbind(
+  data.frame(id=mat_ndvi_2dspl_corrected_cut1$id, plot_id=mat_ndvi_2dspl_corrected_cut1$plot_id, replicate=mat_ndvi_2dspl_corrected_cut1$replicate, rowNumber=mat_ndvi_2dspl_corrected_cut1$rowNumber, colNumber=mat_ndvi_2dspl_corrected_cut1$colNumber, cut=mat_ndvi_2dspl_corrected_cut1$cut, l4_coeff_b=mat_ndvi_2dspl_corrected_cut1$l4_coeff_b_cut1, l4_coeff_c=mat_ndvi_2dspl_corrected_cut1$l4_coeff_c_cut1, l4_coeff_d=mat_ndvi_2dspl_corrected_cut1$l4_coeff_d_cut1, l4_coeff_e=mat_ndvi_2dspl_corrected_cut1$l4_coeff_e_cut1),
+  data.frame(id=mat_ndvi_2dspl_corrected_cut4$id, plot_id=mat_ndvi_2dspl_corrected_cut4$plot_id, replicate=mat_ndvi_2dspl_corrected_cut4$replicate, rowNumber=mat_ndvi_2dspl_corrected_cut4$rowNumber, colNumber=mat_ndvi_2dspl_corrected_cut4$colNumber, cut=mat_ndvi_2dspl_corrected_cut4$cut, l4_coeff_b=mat_ndvi_2dspl_corrected_cut4$l4_coeff_b_cut4, l4_coeff_c=mat_ndvi_2dspl_corrected_cut4$l4_coeff_c_cut4, l4_coeff_d=mat_ndvi_2dspl_corrected_cut4$l4_coeff_d_cut4, l4_coeff_e=mat_ndvi_2dspl_corrected_cut4$l4_coeff_e_cut4)
+)
+mat_ndvi_2dspl_corrected_cuts_env1$rep_cut <- as.factor(paste(mat_ndvi_2dspl_corrected_cuts_env1$replicate, mat_ndvi_2dspl_corrected_cuts_env1$cut));
+```
+
+* This dataframe has L.4 coefficients for the non-spring (Env2) cuttings 2, 3, 5, and 6:
+
+```{r, echo=FALSE}
+mat_ndvi_2dspl_corrected_cuts_env2 <- rbind(
+  data.frame(id=mat_ndvi_2dspl_corrected_cut2$id, plot_id=mat_ndvi_2dspl_corrected_cut2$plot_id, replicate=mat_ndvi_2dspl_corrected_cut2$replicate, rowNumber=mat_ndvi_2dspl_corrected_cut2$rowNumber, colNumber=mat_ndvi_2dspl_corrected_cut2$colNumber, cut=mat_ndvi_2dspl_corrected_cut2$cut, l4_coeff_b=mat_ndvi_2dspl_corrected_cut2$l4_coeff_b_cut2, l4_coeff_c=mat_ndvi_2dspl_corrected_cut2$l4_coeff_c_cut2, l4_coeff_d=mat_ndvi_2dspl_corrected_cut2$l4_coeff_d_cut2, l4_coeff_e=mat_ndvi_2dspl_corrected_cut2$l4_coeff_e_cut2),
+  data.frame(id=mat_ndvi_2dspl_corrected_cut3$id, plot_id=mat_ndvi_2dspl_corrected_cut3$plot_id, replicate=mat_ndvi_2dspl_corrected_cut3$replicate, rowNumber=mat_ndvi_2dspl_corrected_cut3$rowNumber, colNumber=mat_ndvi_2dspl_corrected_cut3$colNumber, cut=mat_ndvi_2dspl_corrected_cut3$cut, l4_coeff_b=mat_ndvi_2dspl_corrected_cut3$l4_coeff_b_cut3, l4_coeff_c=mat_ndvi_2dspl_corrected_cut3$l4_coeff_c_cut3, l4_coeff_d=mat_ndvi_2dspl_corrected_cut3$l4_coeff_d_cut3, l4_coeff_e=mat_ndvi_2dspl_corrected_cut3$l4_coeff_e_cut3),
+  data.frame(id=mat_ndvi_2dspl_corrected_cut5$id, plot_id=mat_ndvi_2dspl_corrected_cut5$plot_id, replicate=mat_ndvi_2dspl_corrected_cut5$replicate, rowNumber=mat_ndvi_2dspl_corrected_cut5$rowNumber, colNumber=mat_ndvi_2dspl_corrected_cut5$colNumber, cut=mat_ndvi_2dspl_corrected_cut5$cut, l4_coeff_b=mat_ndvi_2dspl_corrected_cut5$l4_coeff_b_cut5, l4_coeff_c=mat_ndvi_2dspl_corrected_cut5$l4_coeff_c_cut5, l4_coeff_d=mat_ndvi_2dspl_corrected_cut5$l4_coeff_d_cut5, l4_coeff_e=mat_ndvi_2dspl_corrected_cut5$l4_coeff_e_cut5),
+  data.frame(id=mat_ndvi_2dspl_corrected_cut6$id, plot_id=mat_ndvi_2dspl_corrected_cut6$plot_id, replicate=mat_ndvi_2dspl_corrected_cut6$replicate, rowNumber=mat_ndvi_2dspl_corrected_cut6$rowNumber, colNumber=mat_ndvi_2dspl_corrected_cut6$colNumber, cut=mat_ndvi_2dspl_corrected_cut6$cut, l4_coeff_b=mat_ndvi_2dspl_corrected_cut6$l4_coeff_b_cut6, l4_coeff_c=mat_ndvi_2dspl_corrected_cut6$l4_coeff_c_cut6, l4_coeff_d=mat_ndvi_2dspl_corrected_cut6$l4_coeff_d_cut6, l4_coeff_e=mat_ndvi_2dspl_corrected_cut6$l4_coeff_e_cut6)
+)
+mat_ndvi_2dspl_corrected_cuts_env2$rep_cut <- as.factor(paste(mat_ndvi_2dspl_corrected_cuts_env2$replicate, mat_ndvi_2dspl_corrected_cuts_env2$cut));
+
+mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_cuts_df <- data.frame(Inc=mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_inc, Growth=mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_cuts, Plot=mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_genos, x=mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_x, y=mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_y, sd_min=mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_sd_min, sd_max=mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_sd_max)
+```
+
+### Foreach cutting, and Env1 and Env2, calculate BLUPS for genetic effect of each plot's L.4 coefficients:
+
+```{r, results='hide'}
+ndvi_2dspl_corrected_cut1_l4_b_mix <- mmer(l4_coeff_b_cut1~1 + replicate, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cut1);
+ndvi_2dspl_corrected_cut1_l4_c_mix <- mmer(l4_coeff_c_cut1~1 + replicate, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cut1);
+ndvi_2dspl_corrected_cut1_l4_d_mix <- mmer(l4_coeff_d_cut1~1 + replicate, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cut1);
+ndvi_2dspl_corrected_cut1_l4_e_mix <- mmer(l4_coeff_e_cut1~1 + replicate, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cut1);
+
+ndvi_2dspl_corrected_cut2_l4_b_mix <- mmer(l4_coeff_b_cut2~1 + replicate, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cut2);
+ndvi_2dspl_corrected_cut2_l4_c_mix <- mmer(l4_coeff_c_cut2~1 + replicate, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cut2);
+ndvi_2dspl_corrected_cut2_l4_d_mix <- mmer(l4_coeff_d_cut2~1 + replicate, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cut2);
+ndvi_2dspl_corrected_cut2_l4_e_mix <- mmer(l4_coeff_e_cut2~1 + replicate, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cut2);
+
+ndvi_2dspl_corrected_cut3_l4_b_mix <- mmer(l4_coeff_b_cut3~1 + replicate, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cut3);
+ndvi_2dspl_corrected_cut3_l4_c_mix <- mmer(l4_coeff_c_cut3~1 + replicate, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cut3);
+ndvi_2dspl_corrected_cut3_l4_d_mix <- mmer(l4_coeff_d_cut3~1 + replicate, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cut3);
+ndvi_2dspl_corrected_cut3_l4_e_mix <- mmer(l4_coeff_e_cut3~1 + replicate, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cut3);
+
+ndvi_2dspl_corrected_cut4_l4_b_mix <- mmer(l4_coeff_b_cut4~1 + replicate, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cut4);
+ndvi_2dspl_corrected_cut4_l4_c_mix <- mmer(l4_coeff_c_cut4~1 + replicate, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cut4);
+ndvi_2dspl_corrected_cut4_l4_d_mix <- mmer(l4_coeff_d_cut4~1 + replicate, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cut4);
+ndvi_2dspl_corrected_cut4_l4_e_mix <- mmer(l4_coeff_e_cut4~1 + replicate, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cut4);
+
+ndvi_2dspl_corrected_cut5_l4_b_mix <- mmer(l4_coeff_b_cut5~1 + replicate, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cut5);
+ndvi_2dspl_corrected_cut5_l4_c_mix <- mmer(l4_coeff_c_cut5~1 + replicate, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cut5);
+ndvi_2dspl_corrected_cut5_l4_d_mix <- mmer(l4_coeff_d_cut5~1 + replicate, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cut5);
+ndvi_2dspl_corrected_cut5_l4_e_mix <- mmer(l4_coeff_e_cut5~1 + replicate, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cut5);
+
+ndvi_2dspl_corrected_cut6_l4_b_mix <- mmer(l4_coeff_b_cut6~1 + replicate, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cut6);
+ndvi_2dspl_corrected_cut6_l4_c_mix <- mmer(l4_coeff_c_cut6~1 + replicate, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cut6);
+ndvi_2dspl_corrected_cut6_l4_d_mix <- mmer(l4_coeff_d_cut6~1 + replicate, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cut6);
+ndvi_2dspl_corrected_cut6_l4_e_mix <- mmer(l4_coeff_e_cut6~1 + replicate, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cut6);
+
+ndvi_2dspl_corrected_allcuts_l4_b_mix <- mmer(l4_coeff_b~1 + rep_cut, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_all_cuts);
+ndvi_2dspl_corrected_allcuts_l4_c_mix <- mmer(l4_coeff_c~1 + rep_cut, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_all_cuts);
+ndvi_2dspl_corrected_allcuts_l4_d_mix <- mmer(l4_coeff_d~1 + rep_cut, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_all_cuts);
+ndvi_2dspl_corrected_allcuts_l4_e_mix <- mmer(l4_coeff_e~1 + rep_cut, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_all_cuts);
+
+ndvi_2dspl_corrected_env1_l4_b_mix <- mmer(l4_coeff_b~1 + rep_cut, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cuts_env1);
+ndvi_2dspl_corrected_env1_l4_c_mix <- mmer(l4_coeff_c~1 + rep_cut, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cuts_env1);
+ndvi_2dspl_corrected_env1_l4_d_mix <- mmer(l4_coeff_d~1 + rep_cut, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cuts_env1);
+ndvi_2dspl_corrected_env1_l4_e_mix <- mmer(l4_coeff_e~1 + rep_cut, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cuts_env1);
+
+ndvi_2dspl_corrected_env2_l4_b_mix <- mmer(l4_coeff_b~1 + rep_cut, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cuts_env2);
+ndvi_2dspl_corrected_env2_l4_c_mix <- mmer(l4_coeff_c~1 + rep_cut, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cuts_env2);
+ndvi_2dspl_corrected_env2_l4_d_mix <- mmer(l4_coeff_d~1 + rep_cut, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cuts_env2);
+ndvi_2dspl_corrected_env2_l4_e_mix <- mmer(l4_coeff_e~1 + rep_cut, random=~vs(id), rcov=~vs(units), data=mat_ndvi_2dspl_corrected_cuts_env2);
+```
+
+### Foreach cutting, and Env1 and Env2, show heritability of each plot's L.4 coefficients:
+
+```{r, echo=FALSE}
+h2_ndvi_2dspl_corrected_cut1_l4_b_mix <- vpredict(ndvi_2dspl_corrected_cut1_l4_b_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Cut 1 L4 b Heritability estimate: ", h2_ndvi_2dspl_corrected_cut1_l4_b_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_cut1_l4_c_mix <- vpredict(ndvi_2dspl_corrected_cut1_l4_c_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Cut 1 L4 c Heritability estimate: ", h2_ndvi_2dspl_corrected_cut1_l4_c_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_cut1_l4_d_mix <- vpredict(ndvi_2dspl_corrected_cut1_l4_d_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Cut 1 L4 d Heritability estimate: ", h2_ndvi_2dspl_corrected_cut1_l4_d_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_cut1_l4_e_mix <- vpredict(ndvi_2dspl_corrected_cut1_l4_e_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Cut 1 L4 e Heritability estimate: ", h2_ndvi_2dspl_corrected_cut1_l4_e_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_cut2_l4_b_mix <- vpredict(ndvi_2dspl_corrected_cut2_l4_b_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Cut 2 L4 b Heritability estimate: ", h2_ndvi_2dspl_corrected_cut2_l4_b_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_cut2_l4_c_mix <- vpredict(ndvi_2dspl_corrected_cut2_l4_c_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Cut 2 L4 c Heritability estimate: ", h2_ndvi_2dspl_corrected_cut2_l4_c_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_cut2_l4_d_mix <- vpredict(ndvi_2dspl_corrected_cut2_l4_d_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Cut 2 L4 d Heritability estimate: ", h2_ndvi_2dspl_corrected_cut2_l4_d_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_cut2_l4_e_mix <- vpredict(ndvi_2dspl_corrected_cut2_l4_e_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Cut 2 L4 e Heritability estimate: ", h2_ndvi_2dspl_corrected_cut2_l4_e_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_cut3_l4_b_mix <- vpredict(ndvi_2dspl_corrected_cut3_l4_b_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Cut 3 L4 b Heritability estimate: ", h2_ndvi_2dspl_corrected_cut3_l4_b_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_cut3_l4_c_mix <- vpredict(ndvi_2dspl_corrected_cut3_l4_c_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Cut 3 L4 c Heritability estimate: ", h2_ndvi_2dspl_corrected_cut3_l4_c_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_cut3_l4_d_mix <- vpredict(ndvi_2dspl_corrected_cut3_l4_d_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Cut 3 L4 d Heritability estimate: ", h2_ndvi_2dspl_corrected_cut3_l4_d_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_cut3_l4_e_mix <- vpredict(ndvi_2dspl_corrected_cut3_l4_e_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Cut 3 L4 e Heritability estimate: ", h2_ndvi_2dspl_corrected_cut3_l4_e_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_cut4_l4_b_mix <- vpredict(ndvi_2dspl_corrected_cut4_l4_b_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Cut 4 L4 b Heritability estimate: ", h2_ndvi_2dspl_corrected_cut4_l4_b_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_cut4_l4_c_mix <- vpredict(ndvi_2dspl_corrected_cut4_l4_c_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Cut 4 L4 c Heritability estimate: ", h2_ndvi_2dspl_corrected_cut4_l4_c_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_cut4_l4_d_mix <- vpredict(ndvi_2dspl_corrected_cut4_l4_d_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Cut 4 L4 d Heritability estimate: ", h2_ndvi_2dspl_corrected_cut4_l4_d_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_cut4_l4_e_mix <- vpredict(ndvi_2dspl_corrected_cut4_l4_e_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Cut 4 L4 e Heritability estimate: ", h2_ndvi_2dspl_corrected_cut4_l4_e_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_cut5_l4_b_mix <- vpredict(ndvi_2dspl_corrected_cut5_l4_b_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Cut 5 L4 b Heritability estimate: ", h2_ndvi_2dspl_corrected_cut5_l4_b_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_cut5_l4_c_mix <- vpredict(ndvi_2dspl_corrected_cut5_l4_c_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Cut 5 L4 c Heritability estimate: ", h2_ndvi_2dspl_corrected_cut5_l4_c_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_cut5_l4_d_mix <- vpredict(ndvi_2dspl_corrected_cut5_l4_d_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Cut 5 L4 d Heritability estimate: ", h2_ndvi_2dspl_corrected_cut5_l4_d_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_cut5_l4_e_mix <- vpredict(ndvi_2dspl_corrected_cut5_l4_e_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Cut 5 L4 e Heritability estimate: ", h2_ndvi_2dspl_corrected_cut5_l4_e_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_cut6_l4_b_mix <- vpredict(ndvi_2dspl_corrected_cut6_l4_b_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Cut 6 L4 b Heritability estimate: ", h2_ndvi_2dspl_corrected_cut6_l4_b_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_cut6_l4_c_mix <- vpredict(ndvi_2dspl_corrected_cut6_l4_c_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Cut 6 L4 c Heritability estimate: ", h2_ndvi_2dspl_corrected_cut6_l4_c_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_cut6_l4_d_mix <- vpredict(ndvi_2dspl_corrected_cut6_l4_d_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Cut 6 L4 d Heritability estimate: ", h2_ndvi_2dspl_corrected_cut6_l4_d_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_cut6_l4_e_mix <- vpredict(ndvi_2dspl_corrected_cut6_l4_e_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Cut 6 L4 e Heritability estimate: ", h2_ndvi_2dspl_corrected_cut6_l4_e_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_allcuts_l4_b_mix <- vpredict(ndvi_2dspl_corrected_allcuts_l4_b_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected AllCuts L4 b Heritability estimate: ", h2_ndvi_2dspl_corrected_allcuts_l4_b_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_allcuts_l4_c_mix <- vpredict(ndvi_2dspl_corrected_allcuts_l4_c_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected AllCuts L4 c Heritability estimate: ", h2_ndvi_2dspl_corrected_allcuts_l4_c_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_allcuts_l4_d_mix <- vpredict(ndvi_2dspl_corrected_allcuts_l4_d_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected AllCuts L4 d Heritability estimate: ", h2_ndvi_2dspl_corrected_allcuts_l4_d_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_allcuts_l4_e_mix <- vpredict(ndvi_2dspl_corrected_allcuts_l4_e_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected AllCuts L4 e Heritability estimate: ", h2_ndvi_2dspl_corrected_allcuts_l4_e_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_env1_l4_b_mix <- vpredict(ndvi_2dspl_corrected_env1_l4_b_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Env1 L4 b Heritability estimate: ", h2_ndvi_2dspl_corrected_env1_l4_b_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_env1_l4_c_mix <- vpredict(ndvi_2dspl_corrected_env1_l4_c_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Env1 L4 c Heritability estimate: ", h2_ndvi_2dspl_corrected_env1_l4_c_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_env1_l4_d_mix <- vpredict(ndvi_2dspl_corrected_env1_l4_d_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Env1 L4 d Heritability estimate: ", h2_ndvi_2dspl_corrected_env1_l4_d_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_env1_l4_e_mix <- vpredict(ndvi_2dspl_corrected_env1_l4_e_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Env1 L4 e Heritability estimate: ", h2_ndvi_2dspl_corrected_env1_l4_e_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_env2_l4_b_mix <- vpredict(ndvi_2dspl_corrected_env2_l4_b_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Env2 L4 b Heritability estimate: ", h2_ndvi_2dspl_corrected_env2_l4_b_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_env2_l4_c_mix <- vpredict(ndvi_2dspl_corrected_env2_l4_c_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Env2 L4 c Heritability estimate: ", h2_ndvi_2dspl_corrected_env2_l4_c_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_env2_l4_d_mix <- vpredict(ndvi_2dspl_corrected_env2_l4_d_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Env2 L4 d Heritability estimate: ", h2_ndvi_2dspl_corrected_env2_l4_d_mix$Estimate);
+
+h2_ndvi_2dspl_corrected_env2_l4_e_mix <- vpredict(ndvi_2dspl_corrected_env2_l4_e_mix, h2 ~ (V1) / ( V1+V2) );
+paste0("NDVI 2dspl Corrected Env2 L4 e Heritability estimate: ", h2_ndvi_2dspl_corrected_env2_l4_e_mix$Estimate);
+```
+
+### Run Sommer 2DSpline Spatial Correction on each Alfalfa Biomass cutting:
+
+```{r, results='hide'}
+W <- with(mat, spl2Da(rowNumber, colNumber));
+X <- W$Z$`A:all`;
+
+mix_foragecut1 <- mmer(ForageHarvest_Cut1 ~1 + replicate, random=~vs(germplasmName), rcov=~vs(units), data=mat);
+mix_foragecut2 <- mmer(ForageHarvest_Cut2 ~1 + replicate, random=~vs(germplasmName), rcov=~vs(units), data=mat);
+mix_foragecut3 <- mmer(ForageHarvest_Cut3 ~1 + replicate, random=~vs(germplasmName), rcov=~vs(units), data=mat);
+mix_foragecut4 <- mmer(ForageHarvest_Cut4 ~1 + replicate, random=~vs(germplasmName), rcov=~vs(units), data=mat);
+mix_foragecut5 <- mmer(ForageHarvest_Cut5 ~1 + replicate, random=~vs(germplasmName), rcov=~vs(units), data=mat);
+mix_foragecut6 <- mmer(ForageHarvest_Cut6 ~1 + replicate, random=~vs(germplasmName), rcov=~vs(units), data=mat);
+mix_forageyear1 <- mmer(ForageHarvest_Year1 ~1 + replicate, random=~vs(germplasmName), rcov=~vs(units), data=mat);
+mix_forageyear2 <- mmer(ForageHarvest_Year2 ~1 + replicate, random=~vs(germplasmName), rcov=~vs(units), data=mat);
+
+mix_2dspl_foragecut1 <- mmer(ForageHarvest_Cut1 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_foragecut1 <- X %*% mix_2dspl_foragecut1$U$`A:all`$ForageHarvest_Cut1;
+
+mix_2dspl_foragecut2 <- mmer(ForageHarvest_Cut2 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_foragecut2 <- X %*% mix_2dspl_foragecut2$U$`A:all`$ForageHarvest_Cut2;
+
+mix_2dspl_foragecut3 <- mmer(ForageHarvest_Cut3 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_foragecut3 <- X %*% mix_2dspl_foragecut3$U$`A:all`$ForageHarvest_Cut3;
+
+mix_2dspl_foragecut4 <- mmer(ForageHarvest_Cut4 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_foragecut4 <- X %*% mix_2dspl_foragecut4$U$`A:all`$ForageHarvest_Cut4;
+
+mix_2dspl_foragecut5 <- mmer(ForageHarvest_Cut5 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_foragecut5 <- X %*% mix_2dspl_foragecut5$U$`A:all`$ForageHarvest_Cut5;
+
+mix_2dspl_foragecut6 <- mmer(ForageHarvest_Cut6 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_foragecut6 <- X %*% mix_2dspl_foragecut6$U$`A:all`$ForageHarvest_Cut6;
+
+mix_2dspl_forageyear1 <- mmer(ForageHarvest_Year1 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_forageyear1 <- X %*% mix_2dspl_forageyear1$U$`A:all`$ForageHarvest_Year1;
+
+mix_2dspl_forageyear2 <- mmer(ForageHarvest_Year2 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_forageyear2 <- X %*% mix_2dspl_forageyear2$U$`A:all`$ForageHarvest_Year2;
+```
+
+#### Collect Alfalfa Biomass BLUPs and Spatially Corrected Plot-level Biomass:
+
+```{r, echo=FALSE}
+gen_blup_results <- data.frame(cut1_2dspl=rep(NA,36));
+
+gen_blup_results$id <- names(mix_foragecut1$U$`u:germplasmName`$ForageHarvest_Cut1)
+gen_blup_results$cut1 <- mix_foragecut1$U$`u:germplasmName`$ForageHarvest_Cut1
+gen_blup_results$cut2 <- mix_foragecut2$U$`u:germplasmName`$ForageHarvest_Cut2
+gen_blup_results$cut3 <- mix_foragecut3$U$`u:germplasmName`$ForageHarvest_Cut3
+gen_blup_results$cut4 <- mix_foragecut4$U$`u:germplasmName`$ForageHarvest_Cut4
+gen_blup_results$cut5 <- mix_foragecut5$U$`u:germplasmName`$ForageHarvest_Cut5
+gen_blup_results$cut6 <- mix_foragecut6$U$`u:germplasmName`$ForageHarvest_Cut6
+gen_blup_results$year1 <- mix_forageyear1$U$`u:germplasmName`$ForageHarvest_Year1
+gen_blup_results$year2 <- mix_forageyear2$U$`u:germplasmName`$ForageHarvest_Year2
+
+mat_2dspl_corrected_forage_cut1 <- data.frame(id=mat$germplasmName, plot_id=mat$observationUnitName, replicate=mat$replicate, rowNumber=mat$rowNumber, colNumber=mat$colNumber, cut=rep(1,nrow(mat)), ForageHarvest_Cut1=mat$ForageHarvest_Cut1-blups_2dspl_foragecut1)
+
+gen_blup_results$cut1_2dspl <- mix_2dspl_foragecut1$U$`u:germplasmName`$ForageHarvest_Cut1
+
+mat_2dspl_corrected_forage_cut2 <- data.frame(id=mat$germplasmName, plot_id=mat$observationUnitName, replicate=mat$replicate, rowNumber=mat$rowNumber, colNumber=mat$colNumber, cut=rep(2,nrow(mat)), ForageHarvest_Cut2=mat$ForageHarvest_Cut2-blups_2dspl_foragecut2)
+
+gen_blup_results$cut2_2dspl <- mix_2dspl_foragecut2$U$`u:germplasmName`$ForageHarvest_Cut2
+
+mat_2dspl_corrected_forage_cut3 <- data.frame(id=mat$germplasmName, plot_id=mat$observationUnitName, replicate=mat$replicate, rowNumber=mat$rowNumber, colNumber=mat$colNumber, cut=rep(3,nrow(mat)), ForageHarvest_Cut3=mat$ForageHarvest_Cut3-blups_2dspl_foragecut3)
+
+gen_blup_results$cut3_2dspl <- mix_2dspl_foragecut3$U$`u:germplasmName`$ForageHarvest_Cut3
+
+mat_2dspl_corrected_forage_cut4 <- data.frame(id=mat$germplasmName, plot_id=mat$observationUnitName, replicate=mat$replicate, rowNumber=mat$rowNumber, colNumber=mat$colNumber, cut=rep(4,nrow(mat)), ForageHarvest_Cut4=mat$ForageHarvest_Cut4-blups_2dspl_foragecut4)
+
+gen_blup_results$cut4_2dspl <- mix_2dspl_foragecut4$U$`u:germplasmName`$ForageHarvest_Cut4
+
+mat_2dspl_corrected_forage_cut5 <- data.frame(id=mat$germplasmName, plot_id=mat$observationUnitName, replicate=mat$replicate, rowNumber=mat$rowNumber, colNumber=mat$colNumber, cut=rep(5,nrow(mat)), ForageHarvest_Cut5=mat$ForageHarvest_Cut5-blups_2dspl_foragecut5)
+
+gen_blup_results$cut5_2dspl <- mix_2dspl_foragecut5$U$`u:germplasmName`$ForageHarvest_Cut5
+
+mat_2dspl_corrected_forage_cut6 <- data.frame(id=mat$germplasmName, plot_id=mat$observationUnitName, replicate=mat$replicate, rowNumber=mat$rowNumber, colNumber=mat$colNumber, cut=rep(6,nrow(mat)), ForageHarvest_Cut6=mat$ForageHarvest_Cut6-blups_2dspl_foragecut6)
+
+gen_blup_results$cut6_2dspl <- mix_2dspl_foragecut6$U$`u:germplasmName`$ForageHarvest_Cut6
+
+mat_2dspl_corrected_forage_year1 <- data.frame(id=mat$germplasmName, plot_id=mat$observationUnitName, replicate=mat$replicate, rowNumber=mat$rowNumber, colNumber=mat$colNumber, cut=rep(1,nrow(mat)), ForageHarvest_Year1=mat$ForageHarvest_Year1-blups_2dspl_forageyear1)
+
+gen_blup_results$year1_2dspl <- mix_2dspl_forageyear1$U$`u:germplasmName`$ForageHarvest_Year1
+
+mat_2dspl_corrected_forage_year2 <- data.frame(id=mat$germplasmName, plot_id=mat$observationUnitName, replicate=mat$replicate, rowNumber=mat$rowNumber, colNumber=mat$colNumber, cut=rep(2,nrow(mat)), ForageHarvest_Year2=mat$ForageHarvest_Year2-blups_2dspl_forageyear2)
+
+gen_blup_results$year2_2dspl <- mix_2dspl_forageyear2$U$`u:germplasmName`$ForageHarvest_Year2
+```
+
+#### Correlate L4 Curves of Spatially Corrected Plots to Biomass and Plot-level Spatially Corrected Biomass:
+
+```{r, echo=FALSE}
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1 <- mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_cuts_df[mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_cuts_df$Growth == 'Spring 2020', ]
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2 <- mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_cuts_df[mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_cuts_df$Growth == 'Summer 2020', ]
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3 <- mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_cuts_df[mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_cuts_df$Growth == 'Fall 2020', ]
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4 <- mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_cuts_df[mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_cuts_df$Growth == 'Spring 2021', ]
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5 <- mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_cuts_df[mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_cuts_df$Growth == 'Summer 2021', ]
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6 <- mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_cuts_df[mat_ndvi_2dspl_corrected_geno_2dspl_cutsall_curves_cuts_df$Growth == 'Fall 2021', ]
+
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut1_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut1_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut2_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut2_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut3_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut3_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut4_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut4_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut5_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut5_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut6_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut6_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_year1_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_year1_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_year2_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_year2_2dspl_cors <- c();
+
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut1_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut1_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut2_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut2_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut3_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut3_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut4_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut4_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut5_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut5_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut6_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut6_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_year1_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_year1_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_year2_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_year2_2dspl_cors <- c();
+
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut1_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut1_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut2_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut2_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut3_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut3_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut4_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut4_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut5_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut5_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut6_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut6_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_year1_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_year1_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_year2_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_year2_2dspl_cors <- c();
+
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut1_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut1_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut2_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut2_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut3_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut3_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut4_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut4_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut5_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut5_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut6_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut6_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_year1_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_year1_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_year2_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_year2_2dspl_cors <- c();
+
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut1_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut1_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut2_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut2_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut3_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut3_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut4_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut4_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut5_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut5_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut6_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut6_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_year1_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_year1_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_year2_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_year2_2dspl_cors <- c();
+
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut1_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut1_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut2_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut2_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut3_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut3_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut4_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut4_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut5_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut5_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut6_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut6_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_year1_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_year1_2dspl_cors <- c();
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_year2_cors <- c(); mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_year2_2dspl_cors <- c();
+
+mix_2dspl_foragecut1 <- mmer(ForageHarvest_Cut1 ~1 + replicate, random=~vs(germplasmName) + spl2Da(rowNumber, colNumber), rcov=~vs(units), data=mat);
+blups_2dspl_foragecut1 <- X %*% mix_2dspl_foragecut1$U$`A:all`$ForageHarvest_Cut1;
+
+mat_2dspl_corrected_forage_cut1 <- data.frame(id=mat$germplasmName, plot_id=mat$observationUnitName, replicate=mat$replicate, rowNumber=mat$rowNumber, colNumber=mat$colNumber, cut=rep(1,nrow(mat)), ForageHarvest_Cut1=mat$ForageHarvest_Cut1-blups_2dspl_foragecut1)
+
+for (i in seq(1,100)) {
+
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_t <- mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1[mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1$Inc == i, ]
+  
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut1_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut1_cors, cor(mat$ForageHarvest_Cut1, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut2_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut2_cors, cor(mat$ForageHarvest_Cut2, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut3_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut3_cors, cor(mat$ForageHarvest_Cut3, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut4_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut4_cors, cor(mat$ForageHarvest_Cut4, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut5_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut5_cors, cor(mat$ForageHarvest_Cut5, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut6_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut6_cors, cor(mat$ForageHarvest_Cut6, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_year1_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_year1_cors, cor(mat$ForageHarvest_Year1, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_year2_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_year2_cors, cor(mat$ForageHarvest_Year2, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_t$y) )
+  
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut1_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut1_2dspl_cors, cor(mat_2dspl_corrected_forage_cut1$ForageHarvest_Cut1, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut2_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut2_2dspl_cors, cor(mat_2dspl_corrected_forage_cut2$ForageHarvest_Cut2, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut3_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut3_2dspl_cors, cor(mat_2dspl_corrected_forage_cut3$ForageHarvest_Cut3, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut4_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut4_2dspl_cors, cor(mat_2dspl_corrected_forage_cut4$ForageHarvest_Cut4, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut5_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut5_2dspl_cors, cor(mat_2dspl_corrected_forage_cut5$ForageHarvest_Cut5, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut6_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut6_2dspl_cors, cor(mat_2dspl_corrected_forage_cut6$ForageHarvest_Cut6, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_year1_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_year1_2dspl_cors, cor(mat_2dspl_corrected_forage_year1$ForageHarvest_Year1, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_year2_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_year2_2dspl_cors, cor(mat_2dspl_corrected_forage_year2$ForageHarvest_Year2, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_t$y) )
+  
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_t <- mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2[mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2$Inc == i, ]
+  
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut1_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut1_cors, cor(mat$ForageHarvest_Cut1, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut2_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut2_cors, cor(mat$ForageHarvest_Cut2, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut3_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut3_cors, cor(mat$ForageHarvest_Cut3, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut4_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut4_cors, cor(mat$ForageHarvest_Cut4, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut5_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut5_cors, cor(mat$ForageHarvest_Cut5, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut6_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut6_cors, cor(mat$ForageHarvest_Cut6, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_year1_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_year1_cors, cor(mat$ForageHarvest_Year1, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_year2_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_year2_cors, cor(mat$ForageHarvest_Year2, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_t$y) )
+  
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut1_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut1_2dspl_cors, cor(mat_2dspl_corrected_forage_cut1$ForageHarvest_Cut1, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut2_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut2_2dspl_cors, cor(mat_2dspl_corrected_forage_cut2$ForageHarvest_Cut2, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut3_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut3_2dspl_cors, cor(mat_2dspl_corrected_forage_cut3$ForageHarvest_Cut3, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut4_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut4_2dspl_cors, cor(mat_2dspl_corrected_forage_cut4$ForageHarvest_Cut4, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut5_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut5_2dspl_cors, cor(mat_2dspl_corrected_forage_cut5$ForageHarvest_Cut5, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut6_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut6_2dspl_cors, cor(mat_2dspl_corrected_forage_cut6$ForageHarvest_Cut6, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_year1_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_year1_2dspl_cors, cor(mat_2dspl_corrected_forage_year1$ForageHarvest_Year1, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_year2_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_year2_2dspl_cors, cor(mat_2dspl_corrected_forage_year2$ForageHarvest_Year2, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_t$y) )
+  
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_t <- mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3[mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3$Inc == i, ]
+  
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut1_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut1_cors, cor(mat$ForageHarvest_Cut1, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut2_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut2_cors, cor(mat$ForageHarvest_Cut2, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut3_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut3_cors, cor(mat$ForageHarvest_Cut3, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut4_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut4_cors, cor(mat$ForageHarvest_Cut4, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut5_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut5_cors, cor(mat$ForageHarvest_Cut5, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut6_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut6_cors, cor(mat$ForageHarvest_Cut6, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_year1_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_year1_cors, cor(mat$ForageHarvest_Year1, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_year2_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_year2_cors, cor(mat$ForageHarvest_Year2, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_t$y) )
+  
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut1_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut1_2dspl_cors, cor(mat_2dspl_corrected_forage_cut1$ForageHarvest_Cut1, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut2_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut2_2dspl_cors, cor(mat_2dspl_corrected_forage_cut2$ForageHarvest_Cut2, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut3_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut3_2dspl_cors, cor(mat_2dspl_corrected_forage_cut3$ForageHarvest_Cut3, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut4_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut4_2dspl_cors, cor(mat_2dspl_corrected_forage_cut4$ForageHarvest_Cut4, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut5_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut5_2dspl_cors, cor(mat_2dspl_corrected_forage_cut5$ForageHarvest_Cut5, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut6_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut6_2dspl_cors, cor(mat_2dspl_corrected_forage_cut6$ForageHarvest_Cut6, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_year1_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_year1_2dspl_cors, cor(mat_2dspl_corrected_forage_year1$ForageHarvest_Year1, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_year2_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_year2_2dspl_cors, cor(mat_2dspl_corrected_forage_year2$ForageHarvest_Year2, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_t$y) )
+  
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_t <- mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4[mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4$Inc == i, ]
+  
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut1_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut1_cors, cor(mat$ForageHarvest_Cut1, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut2_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut2_cors, cor(mat$ForageHarvest_Cut2, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut3_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut3_cors, cor(mat$ForageHarvest_Cut3, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut4_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut4_cors, cor(mat$ForageHarvest_Cut4, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut5_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut5_cors, cor(mat$ForageHarvest_Cut5, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut6_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut6_cors, cor(mat$ForageHarvest_Cut6, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_year1_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_year1_cors, cor(mat$ForageHarvest_Year1, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_year2_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_year2_cors, cor(mat$ForageHarvest_Year2, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_t$y) )
+  
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut1_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut1_2dspl_cors, cor(mat_2dspl_corrected_forage_cut1$ForageHarvest_Cut1, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut2_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut2_2dspl_cors, cor(mat_2dspl_corrected_forage_cut2$ForageHarvest_Cut2, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut3_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut3_2dspl_cors, cor(mat_2dspl_corrected_forage_cut3$ForageHarvest_Cut3, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut4_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut4_2dspl_cors, cor(mat_2dspl_corrected_forage_cut4$ForageHarvest_Cut4, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut5_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut5_2dspl_cors, cor(mat_2dspl_corrected_forage_cut5$ForageHarvest_Cut5, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut6_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut6_2dspl_cors, cor(mat_2dspl_corrected_forage_cut6$ForageHarvest_Cut6, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_year1_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_year1_2dspl_cors, cor(mat_2dspl_corrected_forage_year1$ForageHarvest_Year1, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_year2_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_year2_2dspl_cors, cor(mat_2dspl_corrected_forage_year2$ForageHarvest_Year2, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_t$y) )
+  
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_t <- mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5[mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5$Inc == i, ]
+  
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut1_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut1_cors, cor(mat$ForageHarvest_Cut1, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut2_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut2_cors, cor(mat$ForageHarvest_Cut2, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut3_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut3_cors, cor(mat$ForageHarvest_Cut3, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut4_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut4_cors, cor(mat$ForageHarvest_Cut4, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut5_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut5_cors, cor(mat$ForageHarvest_Cut5, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut6_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut6_cors, cor(mat$ForageHarvest_Cut6, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_year1_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_year1_cors, cor(mat$ForageHarvest_Year1, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_year2_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_year2_cors, cor(mat$ForageHarvest_Year2, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_t$y) )
+  
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut1_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut1_2dspl_cors, cor(mat_2dspl_corrected_forage_cut1$ForageHarvest_Cut1, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut2_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut2_2dspl_cors, cor(mat_2dspl_corrected_forage_cut2$ForageHarvest_Cut2, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut3_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut3_2dspl_cors, cor(mat_2dspl_corrected_forage_cut3$ForageHarvest_Cut3, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut4_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut4_2dspl_cors, cor(mat_2dspl_corrected_forage_cut4$ForageHarvest_Cut4, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut5_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut5_2dspl_cors, cor(mat_2dspl_corrected_forage_cut5$ForageHarvest_Cut5, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut6_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut6_2dspl_cors, cor(mat_2dspl_corrected_forage_cut6$ForageHarvest_Cut6, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_year1_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_year1_2dspl_cors, cor(mat_2dspl_corrected_forage_year1$ForageHarvest_Year1, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_year2_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_year2_2dspl_cors, cor(mat_2dspl_corrected_forage_year2$ForageHarvest_Year2, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_t$y) )
+  
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_t <- mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6[mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6$Inc == i, ]
+  
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut1_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut1_cors, cor(mat$ForageHarvest_Cut1, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut2_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut2_cors, cor(mat$ForageHarvest_Cut2, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut3_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut3_cors, cor(mat$ForageHarvest_Cut3, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut4_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut4_cors, cor(mat$ForageHarvest_Cut4, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut5_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut5_cors, cor(mat$ForageHarvest_Cut5, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut6_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut6_cors, cor(mat$ForageHarvest_Cut6, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_year1_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_year1_cors, cor(mat$ForageHarvest_Year1, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_year2_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_year2_cors, cor(mat$ForageHarvest_Year2, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_t$y) )
+
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut1_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut1_2dspl_cors, cor(mat_2dspl_corrected_forage_cut1$ForageHarvest_Cut1, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut2_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut2_2dspl_cors, cor(mat_2dspl_corrected_forage_cut2$ForageHarvest_Cut2, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut3_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut3_2dspl_cors, cor(mat_2dspl_corrected_forage_cut3$ForageHarvest_Cut3, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut4_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut4_2dspl_cors, cor(mat_2dspl_corrected_forage_cut4$ForageHarvest_Cut4, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut5_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut5_2dspl_cors, cor(mat_2dspl_corrected_forage_cut5$ForageHarvest_Cut5, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut6_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut6_2dspl_cors, cor(mat_2dspl_corrected_forage_cut6$ForageHarvest_Cut6, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_year1_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_year1_2dspl_cors, cor(mat_2dspl_corrected_forage_year1$ForageHarvest_Year1, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_t$y) )
+  mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_year2_2dspl_cors <- append(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_year2_2dspl_cors, cor(mat_2dspl_corrected_forage_year2$ForageHarvest_Year2, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_t$y) )
+}
+
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cors <- data.frame(
+  Growth=c(rep("Spring 2020", 100*8), rep("Summer 2020", 100*8), rep("Fall 2020", 100*8), rep("Spring 2021", 100*8), rep("Summer 2021", 100*8), rep("Fall 2021", 100*8)),
+  Harvest=c(rep ( c( rep("Spring 2020", 100), rep("Summer 2020", 100), rep("Fall 2020", 100), rep("Spring 2021", 100), rep("Summer 2021", 100), rep("Fall 2021", 100), rep("Year 1", 100), rep("Year 2", 100) ), 6) ),
+  x=c(rep(seq(1,100), 8), rep(seq(1,100), 8), rep(seq(1,100), 8), rep(seq(1,100), 8), rep(seq(1,100), 8), rep(seq(1,100), 8) ),
+  y=c(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut1_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut2_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut3_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut4_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut5_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut6_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_year1_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_year2_cors,
+      mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut1_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut2_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut3_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut4_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut5_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut6_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_year1_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_year2_cors,
+      mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut1_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut2_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut3_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut4_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut5_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut6_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_year1_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_year2_cors,
+      mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut1_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut2_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut3_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut4_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut5_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut6_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_year1_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_year2_cors,
+      mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut1_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut2_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut3_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut4_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut5_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut6_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_year1_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_year2_cors,
+      mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut1_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut2_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut3_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut6_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut5_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut6_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_year1_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_year2_cors)
+)
+
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cors_2dspl <- data.frame(
+  Growth=c(rep("Spring 2020", 100*8), rep("Summer 2020", 100*8), rep("Fall 2020", 100*8), rep("Spring 2021", 100*8), rep("Summer 2021", 100*8), rep("Fall 2021", 100*8)),
+  Harvest=c(rep ( c( rep("Spring 2020", 100), rep("Summer 2020", 100), rep("Fall 2020", 100), rep("Spring 2021", 100), rep("Summer 2021", 100), rep("Fall 2021", 100), rep("Year 1", 100), rep("Year 2", 100) ), 6) ),
+  x=c(rep(seq(1,100), 8), rep(seq(1,100), 8), rep(seq(1,100), 8), rep(seq(1,100), 8), rep(seq(1,100), 8), rep(seq(1,100), 8) ),
+  y=c(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut1_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut2_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut3_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut4_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut5_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut6_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_year1_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_year2_2dspl_cors,
+      mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut1_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut2_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut3_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut4_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut5_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_cut6_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_year1_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut2_year2_2dspl_cors,
+      mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut1_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut2_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut3_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut4_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut5_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_cut6_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_year1_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut3_year2_2dspl_cors,
+      mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut1_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut2_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut3_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut4_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut5_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_cut6_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_year1_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut4_year2_2dspl_cors,
+      mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut1_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut2_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut3_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut4_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut5_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_cut6_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_year1_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut5_year2_2dspl_cors,
+      mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut1_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut2_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut3_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut6_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_cut5_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut1_cut6_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_year1_2dspl_cors, mat_ndvi_2dspl_corrected_plot_cutsall_curves_cut6_year2_2dspl_cors)
+)
+```
+
+#### Plot of Correlation of L4 Spatially Corrected Plot Curves to Plot Biomass:
+
+```{r, echo=FALSE}
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cors$Growth <- factor(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cors$Growth, levels=c("Spring 2020","Spring 2021","Summer 2020","Summer 2021","Fall 2020","Fall 2021"))
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cors$Harvest <- factor(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cors$Harvest, levels=c("Spring 2020","Spring 2021","Summer 2020","Summer 2021","Fall 2020","Fall 2021","Year 1","Year 2"))
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cors_p1 <- ggplot(data=mat_ndvi_2dspl_corrected_plot_cutsall_curves_cors, aes(x=x, y=y, color=Harvest)) +
+  geom_line(data=mat_ndvi_2dspl_corrected_plot_cutsall_curves_cors, aes(x=x, y=y)) +
+  facet_wrap(. ~ Growth, nrow = 6, scales="free")
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cors_p1 <- mat_ndvi_2dspl_corrected_plot_cutsall_curves_cors_p1 + labs(y= "Correlation", x = "Growth Days")
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cors_p1 <- mat_ndvi_2dspl_corrected_plot_cutsall_curves_cors_p1 + ggtitle("Correlation of Logistic Growth Curves to Biomass")
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cors_p1
+
+ggsave('NonLinearGrowthBiomassCorrelations.png', mat_ndvi_2dspl_corrected_plot_cutsall_curves_cors_p1, device='png', width=7, height=12, units='in');
+```
+
+#### Plot of Correlation of L4 Spatially Corrected Plot Curves to Plot-Level Biomass Spatially Corrected:
+
+```{r, echo=FALSE}
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cors_2dspl$Growth <- factor(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cors_2dspl$Growth, levels=c("Spring 2020","Spring 2021","Summer 2020","Summer 2021","Fall 2020","Fall 2021"))
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cors_2dspl$Harvest <- factor(mat_ndvi_2dspl_corrected_plot_cutsall_curves_cors_2dspl$Harvest, levels=c("Spring 2020","Spring 2021","Summer 2020","Summer 2021","Fall 2020","Fall 2021","Year 1","Year 2"))
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cors_2dspl_p1 <- ggplot(data=mat_ndvi_2dspl_corrected_plot_cutsall_curves_cors_2dspl, aes(x=x, y=y, color=Harvest)) +
+  geom_line(data=mat_ndvi_2dspl_corrected_plot_cutsall_curves_cors_2dspl, aes(x=x, y=y)) +
+  facet_wrap(. ~ Growth, nrow = 6, scales="free")
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cors_2dspl_p1 <- mat_ndvi_2dspl_corrected_plot_cutsall_curves_cors_2dspl_p1 + labs(y= "Correlation", x = "Growth Days")
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cors_2dspl_p1 <- mat_ndvi_2dspl_corrected_plot_cutsall_curves_cors_2dspl_p1 + ggtitle("Correlation of Logistic Growth Curves to Spatially Corrected Biomass")
+mat_ndvi_2dspl_corrected_plot_cutsall_curves_cors_2dspl_p1
+
+ggsave('NonLinearGrowthBiomassSpatiallyCorrectedCorrelations.png', mat_ndvi_2dspl_corrected_plot_cutsall_curves_cors_2dspl_p1, device='png', width=7, height=12, units='in');
+```
+
+# Conclusions:
+
+* The b coefficient is the slope of the L.4 logistic regression, d and c are the max and min value in the logistic regression, and e is the x value of the inflection in the logistic regression.
+
+* L.4 coefficients heritabilities of plot-level spatially corrected NDVI:
+
+  + [1] "NDVI 2dspl Corrected Cut 1 L4 b Heritability estimate: 0.812655522277797"
+  + [1] "NDVI 2dspl Corrected Cut 1 L4 c Heritability estimate: 0.696133208857642"
+  + [1] "NDVI 2dspl Corrected Cut 1 L4 d Heritability estimate: 0.636754244798628"
+  + [1] "NDVI 2dspl Corrected Cut 1 L4 e Heritability estimate: 0.119485153463972"
+  + [1] "NDVI 2dspl Corrected Cut 2 L4 b Heritability estimate: 0.352446736974418"
+  + [1] "NDVI 2dspl Corrected Cut 2 L4 c Heritability estimate: 0.6872851180735"
+  + [1] "NDVI 2dspl Corrected Cut 2 L4 d Heritability estimate: 0.346581022300355"
+  + [1] "NDVI 2dspl Corrected Cut 2 L4 e Heritability estimate: 0.568731236796091"
+  + [1] "NDVI 2dspl Corrected Cut 3 L4 b Heritability estimate: 0.69808529910239"
+  + [1] "NDVI 2dspl Corrected Cut 3 L4 c Heritability estimate: 0.910015314301461"
+  + [1] "NDVI 2dspl Corrected Cut 3 L4 d Heritability estimate: 0.800217796022237"
+  + [1] "NDVI 2dspl Corrected Cut 3 L4 e Heritability estimate: 0.0409433373716696"
+  + [1] "NDVI 2dspl Corrected Cut 4 L4 b Heritability estimate: 0.235801920406763"
+  + [1] "NDVI 2dspl Corrected Cut 4 L4 c Heritability estimate: 0.593401379968539"
+  + [1] "NDVI 2dspl Corrected Cut 4 L4 d Heritability estimate: 0.583187340969314"
+  + [1] "NDVI 2dspl Corrected Cut 4 L4 e Heritability estimate: 0.302856596633907"
+  + [1] "NDVI 2dspl Corrected Cut 5 L4 b Heritability estimate: 0.76557927542468"
+  + [1] "NDVI 2dspl Corrected Cut 5 L4 c Heritability estimate: 0.872192716923437"
+  + [1] "NDVI 2dspl Corrected Cut 5 L4 d Heritability estimate: 0.81626338575802"
+  + [1] "NDVI 2dspl Corrected Cut 5 L4 e Heritability estimate: 0.897381339081175"
+
+* L.4 curves of spatially corrected NDVI are correlated >0.5 with alfalfa Biomass and are more correlated >0.7 with spatially corrected Biomass. View the attached plots.
